@@ -2,9 +2,11 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
+from app.core.failures import RETRYABLE_CODES
 from app.db.models import JobStatus
+from app.schemas.summary import Summary
 
 
 class InitiateRequest(BaseModel):
@@ -28,16 +30,6 @@ class InitiateResponse(BaseModel):
     upload: UploadTarget
 
 
-class Summary(BaseModel):
-    """The structure the LLM summary must follow."""
-
-    overview: str
-    key_points: list[str]
-    action_items: list[str]
-    decisions: list[str]
-    uncertainties: list[str]
-
-
 class UploadListItem(BaseModel):
     """What the history list needs. No transcript or summary text, so the list stays small."""
 
@@ -55,6 +47,12 @@ class UploadListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def can_retry(self) -> bool:
+        """Whether the UI should offer a Retry button: only for failures where trying again can plausibly help."""
+        return self.status is JobStatus.FAILED and self.error_code in RETRYABLE_CODES
 
 
 class UploadDetail(UploadListItem):

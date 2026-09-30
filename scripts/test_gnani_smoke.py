@@ -6,6 +6,7 @@ from pathlib import Path
 
 import gnani_smoke_test as gs
 import httpx
+import pytest
 
 KEY = "test-key"
 JOB = "job-1"
@@ -13,7 +14,13 @@ JOBS = "/stt/v3/batch/jobs"
 TRANSCRIPT_URL = "https://s3.test/results/t.json?X-Amz-Signature=secret"
 
 SLEPT: list[float] = []
-gs.time.sleep = SLEPT.append  # no real waiting; also lets us assert poll/backoff delays
+
+
+@pytest.fixture(autouse=True)
+def no_real_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No real waiting, and the delays can be asserted. Scoped to each test: assigning gs.time.sleep at import time
+    would replace time.sleep for the WHOLE process (gs.time is the time module) once pytest collects this file."""
+    monkeypatch.setattr(gs.time, "sleep", SLEPT.append)
 
 
 def fake(script):

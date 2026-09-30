@@ -1,10 +1,11 @@
 import logging
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
-from fakes import FakeStorage
+from fakes import FakeQueue, FakeStorage
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -100,21 +101,26 @@ def test_initiate_logs_an_event_but_never_the_signed_url(api: TestClient, caplog
 # --- complete --------------------------------------------------------------------------------------------------
 
 
-def test_complete_verifies_the_object_and_marks_the_job_uploaded(api: TestClient, storage: FakeStorage) -> None:
+def test_complete_verifies_the_object_then_queues_the_job_for_the_worker(
+    api: TestClient, storage: FakeStorage, queue: FakeQueue
+) -> None:
     job_id = initiate(api)["id"]
     storage.put(key_of(job_id), 5_000_000)
     res = api.post(f"/api/uploads/{job_id}/complete")
-    assert res.status_code == 200 and res.json()["status"] == "UPLOADED"
-    assert api.get(f"/api/uploads/{job_id}").json()["status"] == "UPLOADED"  # persisted, not just returned
+    assert res.status_code == 200 and res.json()["status"] == "QUEUED"
+    assert res.json()["progress_message"] == "Uploaded. Waiting for transcription…"
+    assert api.get(f"/api/uploads/{job_id}").json()["status"] == "QUEUED"  # persisted, not just returned
+    assert queue.enqueued == [(uuid.UUID(job_id), 0)]  # handed to the worker exactly once
 
 
-def test_complete_is_idempotent_and_does_not_hit_storage_twice(api: TestClient, storage: FakeStorage) -> None:
+def test_complete_is_idempotent_and_never_queues_twice(api: TestClient, storage: FakeStorage, queue: FakeQueue) -> None:
     job_id = initiate(api)["id"]
     storage.put(key_of(job_id), 5_000_000)
     first, second = (api.post(f"/api/uploads/{job_id}/complete") for _ in range(2))
     assert first.status_code == second.status_code == 200
     assert first.json() == second.json()
     assert storage.head_calls == 1  # the duplicate call was answered from the database alone
+    assert len(queue.enqueued) == 1  # and started no second processing run
 
 
 def test_complete_before_the_bytes_arrive_is_retryable(api: TestClient, storage: FakeStorage) -> None:
@@ -123,7 +129,7 @@ def test_complete_before_the_bytes_arrive_is_retryable(api: TestClient, storage:
     assert error(early) == (409, "UPLOAD_NOT_FOUND")
     assert api.get(f"/api/uploads/{job_id}").json()["status"] == "UPLOADING"  # not failed: it can still finish
     storage.put(key_of(job_id), 5_000_000)
-    assert api.post(f"/api/uploads/{job_id}/complete").json()["status"] == "UPLOADED"
+    assert api.post(f"/api/uploads/{job_id}/complete").json()["status"] == "QUEUED"
 
 
 def test_complete_with_the_wrong_size_fails_the_job_with_a_visible_reason(
@@ -144,7 +150,7 @@ def test_storage_outage_is_a_503_and_leaves_the_job_untouched(api: TestClient, s
     storage.outage = False
     assert api.get(f"/api/uploads/{job_id}").json()["status"] == "UPLOADING"
     storage.put(key_of(job_id), 5_000_000)
-    assert api.post(f"/api/uploads/{job_id}/complete").json()["status"] == "UPLOADED"
+    assert api.post(f"/api/uploads/{job_id}/complete").json()["status"] == "QUEUED"
 
 
 def test_complete_on_a_finished_or_failed_job_just_reports_it(api: TestClient, storage: FakeStorage) -> None:
@@ -155,7 +161,9 @@ def test_complete_on_a_finished_or_failed_job_just_reports_it(api: TestClient, s
     assert again.status_code == 200 and again.json()["status"] == "FAILED"
 
 
-def test_concurrent_completions_produce_exactly_one_transition(db: Session, storage: FakeStorage) -> None:
+def test_concurrent_completions_produce_exactly_one_transition(
+    db: Session, storage: FakeStorage, queue: FakeQueue
+) -> None:
     """Two browser tabs (or a retrying client) completing at once must trigger the follow-up work once."""
     with get_sessionmaker()() as session:
         job, _url, _type = uploads.initiate_upload(
@@ -163,14 +171,17 @@ def test_concurrent_completions_produce_exactly_one_transition(db: Session, stor
         )
         job_id = job.id
     storage.put(f"uploads/{job_id}/audio.wav", 10)
+    storage.head_barrier = threading.Barrier(6)  # all six have seen UPLOADING before any of them completes it
 
     def attempt(_: int) -> bool:
         with get_sessionmaker()() as s:
-            return uploads.complete_upload(s, storage, job_id)[1]
+            return uploads.complete_upload(s, storage, queue, job_id)[1]
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(attempt, range(6)))
+    assert storage.head_calls == 6  # proof the race really happened: none of them took the early "already done" exit
     assert results.count(True) == 1
+    assert len(queue.enqueued) == 1  # six racing calls, one processing run
 
 
 def _settings() -> Any:

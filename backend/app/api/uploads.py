@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.providers.queue import JobQueue, get_queue
 from app.providers.storage import ObjectStorage, get_storage
 from app.schemas.uploads import InitiateRequest, InitiateResponse, UploadDetail, UploadListItem, UploadTarget
 from app.services import jobs, uploads
@@ -44,10 +45,22 @@ def complete(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
     storage: ObjectStorage = Depends(get_storage),
+    queue: JobQueue = Depends(get_queue),
 ) -> UploadDetail:
-    """The browser says the upload finished. We verify the object exists before believing it. Idempotent."""
-    job, _moved = uploads.complete_upload(db, storage, job_id)
+    """The browser says the upload finished. We verify the object exists before believing it, then hand the job
+    to the worker. Idempotent: a repeat call reports the current state and starts nothing."""
+    job, _moved = uploads.complete_upload(db, storage, queue, job_id)
     return UploadDetail.model_validate(job)
+
+
+@router.post("/{job_id}/retry", response_model=UploadDetail)
+def retry(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    queue: JobQueue = Depends(get_queue),
+) -> UploadDetail:
+    """Start a new attempt for a failed job (only for failures where retrying can help). Idempotent."""
+    return UploadDetail.model_validate(uploads.retry_upload(db, queue, job_id))
 
 
 @router.get("", response_model=list[UploadListItem])

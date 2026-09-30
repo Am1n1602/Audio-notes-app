@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/app/core/config.py -> repo root
@@ -26,6 +26,38 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 2 * 1024**3
     upload_url_expires_seconds: int = 900  # S3 checks expiry when the request starts, not when it ends
 
+    # Gnani Batch STT (used by the worker; the API never calls Gnani). Optional here so the API process can run
+    # without provider secrets it never uses; the worker refuses to start without them (missing_worker_secrets).
+    gnani_api_key: SecretStr | None = None
+    gnani_base_url: str = "https://api.vachana.ai"
+    gnani_poll_seconds: int = Field(default=10, ge=10)  # Gnani asks for no faster than one status poll per 10 s
+    # Measured live: calls 1 s apart all succeed, calls 0.5 s apart are refused (429) half the time. So the client
+    # spaces its own calls at least this far apart (with a margin) instead of collecting 429s.
+    gnani_min_call_interval_seconds: float = Field(default=1.2, ge=0)
+    gnani_max_transcribe_seconds: int = 7200  # stop waiting on a job Gnani never finishes (fails as a timeout)
+    gnani_source_url_expires_seconds: int = 3600  # lifetime of the signed download link we hand to Gnani
+
+    # Summary LLM (Groq's OpenAI-compatible API; used by the worker, never by the API).
+    llm_api_key: SecretStr | None = None
+    # No hidden reasoning tokens, unlike gpt-oss (which spends ~1000 of every answer's token budget thinking).
+    # llama-3.3-70b-versatile is not available to every key. Any chat model id works.
+    llm_model: str = "qwen/qwen3.8-27b"
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    # Groq limits OUTPUT tokens per minute separately from total tokens: 1000 on our key (found in a 429 body: "on
+    # output tokens per minute (OTPM): Limit 1000"), so an answer longer than that can never succeed. The prompts ask
+    # for about 200 words (~650 tokens of Hindi, ~300 of English); this cap only stops a runaway answer, which is then
+    # retried once with a request to be much shorter.
+    llm_max_output_tokens: int = 900
+    # A transcript longer than this is summarised in parts and the parts merged. Groq caps total tokens per MINUTE per
+    # model (8000 on our key, from the x-ratelimit-limit-tokens header) and OUTPUT tokens per minute (1000, above).
+    # Measured: a 6000-character part of number-heavy English cost ~2100 prompt tokens (prompt included), and Hindi
+    # costs more (about 2.4 characters per token). With short part answers a call is ~2.5K tokens in and a few hundred
+    # out, so parts 30 s apart stay under both caps. Raise the size and shorten the interval on a key with higher
+    # limits.
+    llm_chunk_chars: int = 6000
+    llm_chunk_interval_seconds: int = 30  # pause between part-summaries so the tokens-per-minute cap holds
+    llm_max_wait_seconds: int = 30  # longest 429 "retry-after" we wait for inside a step; longer fails as rate-limited
+
     cors_origins: str = ""  # comma-separated list of allowed browser origins
     app_env: str = "development"
     log_level: str = "INFO"
@@ -40,9 +72,21 @@ class Settings(BaseSettings):
                 return "postgresql+psycopg://" + url[len(prefix) :]
         return url
 
+    def missing_worker_secrets(self) -> list[str]:
+        """Env var names the worker cannot run without (unset or blank). The API never needs them."""
+        wanted = (("GNANI_API_KEY", self.gnani_api_key), ("LLM_API_KEY", self.llm_api_key))
+        return [name for name, value in wanted if value is None or not value.get_secret_value().strip()]
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+
+def require_secret(value: SecretStr | None, name: str) -> str:
+    """The secret's text, or a clear error naming the variable (never its value)."""
+    if value is None or not value.get_secret_value().strip():
+        raise RuntimeError(f"{name} is not set (it is required by the worker)")
+    return value.get_secret_value()
 
 
 @lru_cache

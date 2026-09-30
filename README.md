@@ -27,7 +27,7 @@ The assignment explicitly requires Next.js, FastAPI, Postgres, storage, backgrou
 | Queue | Redis | Simple durable-enough queue for the take-home architecture |
 | Worker | Celery | Clear background-job model and retry controls |
 | ASR | Gnani Prisma v2.5 Batch STT | Required provider and correct choice for long recordings |
-| Summary LLM | Provider behind a small adapter | Keeps the summarizer replaceable |
+| Summary LLM | Groq (OpenAI-compatible API) behind a small adapter | Fast, has a free tier for a demo; the adapter keeps it replaceable |
 | Deployment | Vercel frontend + managed backend/worker services | Simple public demo topology |
 
 Use one concrete provider combination and document it. Do not change providers mid-project unless a real deployment limitation forces it.
@@ -154,7 +154,20 @@ Use `127.0.0.1`, not `localhost`, in `DATABASE_URL` / `REDIS_URL` on Windows: `l
 and every connection then waits out its whole connect timeout before falling back to IPv4.
 
 The test suite needs the Postgres container running (`docker compose up -d --wait`); it creates and migrates its
-own `audio_notes_test` database. Storage is faked in tests.
+own `audio_notes_test` database. Storage, the queue and Gnani are all faked in tests.
+
+## How processing works
+
+`/complete` verifies the file in S3 and puts one task on the Redis queue. The worker then processes the job as a
+chain of short steps (claim, create the Gnani job, start it, poll, download the transcript, save it), each step
+re-reading the job from Postgres and scheduling the next. Nothing runs inside a web request, and a worker restart
+loses nothing because all state is in Postgres.
+
+Once the transcript is saved the same chain continues into the summary: the transcript goes to Groq as data (never
+mixed into the instructions), and the answer is validated against a fixed structure (overview, key points, action
+items, decisions, uncertainties) before anything is stored. A very long transcript is summarised in parts, one part
+per step, then merged. If the summary fails, the transcript stays saved and readable, and Retry resumes at the
+summary without transcribing again. The worker needs `GNANI_API_KEY` and `LLM_API_KEY` in `.env` and refuses to start without them; the API does not use them.
 
 ## Storage setup (AWS S3)
 
@@ -186,8 +199,9 @@ own `audio_notes_test` database. Storage is faked in tests.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/uploads/initiate` | validate, create a job, return a signed URL to PUT the file to |
-| `POST /api/uploads/{id}/complete` | verify the upload landed in storage (idempotent) |
-| `GET /api/uploads`, `GET /api/uploads/{id}` | history and job detail |
+| `POST /api/uploads/{id}/complete` | verify the upload landed in storage, then queue it for the worker (idempotent) |
+| `POST /api/uploads/{id}/retry` | start a new attempt for a failed job, when `can_retry` is true (idempotent) |
+| `GET /api/uploads`, `GET /api/uploads/{id}` | history and job detail (status, stage message, transcript, summary, error, `can_retry`) |
 | `GET /api/health` | Postgres and Redis status |
 
 Interactive docs are at `/docs` on the running API. Errors always look like `{"error": {"code", "message"}}`.

@@ -5,6 +5,10 @@
 Happy path: initiate -> PUT the bytes to the signed URL -> complete (twice) -> read back.
 Abuse cases S3 itself must refuse: wrong Content-Type, wrong size. Plus: completing before uploading.
 Leaves the test objects and job rows behind (they show up in the history list).
+
+/complete hands the job to the worker. If a worker is running, the uploaded file is REALLY transcribed and
+summarised (it uses Gnani and Groq quota) and the job moves on while this script runs, so the checks accept the
+job being at any status after the upload. Stop the worker for a storage-only check: the job then stays QUEUED.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from pathlib import Path
 import httpx
 
 failures: list[str] = []
+ACCEPTED = {"UPLOADED", "QUEUED", "TRANSCRIBING", "SUMMARIZING", "COMPLETED"}  # anything after a verified upload
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -46,11 +51,18 @@ def main(base_url: str, audio: Path) -> int:
     put = httpx.put(target["url"], content=data, headers=target["headers"], timeout=120)
     check("browser-style PUT straight to S3 -> 200", put.status_code == 200, f"HTTP {put.status_code}")
     first = api.post(f"/api/uploads/{job['id']}/complete")
-    check("complete -> UPLOADED", first.status_code == 200 and first.json()["status"] == "UPLOADED", first.text[:80])
+    check(
+        "complete -> accepted (QUEUED, or later)",
+        first.status_code == 200 and first.json()["status"] in ACCEPTED,
+        first.text[:80],
+    )
     second = api.post(f"/api/uploads/{job['id']}/complete")
-    check("second complete is a harmless repeat", second.status_code == 200 and second.json() == first.json())
+    check(
+        "second complete is a harmless repeat",
+        second.status_code == 200 and second.json()["id"] == job["id"] and second.json()["status"] in ACCEPTED,
+    )
     detail = api.get(f"/api/uploads/{job['id']}").json()
-    check("detail shows the stored state", detail["status"] == "UPLOADED" and detail["size_bytes"] == len(data))
+    check("detail shows the stored state", detail["status"] in ACCEPTED and detail["size_bytes"] == len(data))
     listed = api.get("/api/uploads").json()
     check("history lists it first", bool(listed) and listed[0]["id"] == job["id"])
 

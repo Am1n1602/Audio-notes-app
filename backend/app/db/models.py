@@ -52,9 +52,24 @@ class AudioJob(Base):
     # The unique constraint enforces it in the database; NULLs do not collide.
     gnani_job_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     gnani_status: Mapped[str | None] = mapped_column(String(32))
+    # Set by the atomic claim before Create Job is called. "claimed but no gnani_job_id" therefore means the
+    # outcome of Create is unknown (crash, lost reply), and the worker must NOT create again. Also the clock for
+    # gnani_max_transcribe_seconds.
+    submit_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # When this job's next worker step is due (DB clock). A job has ONE chain of self-rescheduling steps, but a worker
+    # restart, a second replica or a redelivered message can start another. A step that arrives well before this time
+    # is such a duplicate and ends its chain (services/jobs.py: is_step_due). NULL means "a step is due right now".
+    next_step_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     transcript: Mapped[str | None] = mapped_column(Text)
-    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # {overview, key_points, action_items, ...}
+    summary: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )  # {overview, key_points, action_items, ...}
+    # A long transcript is summarised in parts, one LLM call per worker step. The finished part-summaries are kept
+    # here (in order) so a restart resumes at the next part instead of paying for the first ones again. Cleared once
+    # the final summary is saved.
+    summary_partials: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB(none_as_null=True))
 
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)

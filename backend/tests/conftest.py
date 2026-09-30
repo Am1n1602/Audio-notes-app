@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from fakes import FakeStorage
+from fakes import FakeQueue, FakeStorage
 from fastapi.testclient import TestClient
+from helpers import assert_test_database
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.session import get_db, get_sessionmaker
 from app.main import app
+from app.providers.queue import get_queue
 from app.providers.storage import get_storage
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
@@ -28,6 +30,7 @@ def alembic_config(database_url: str | None = None) -> Config:
 
 def recreate_database(name: str) -> str:
     """(Re)create an empty database next to the configured one; returns its URL."""
+    assert_test_database(name)
     base = make_url(get_settings().database_url)
     admin = create_engine(base.set(database="postgres"), isolation_level="AUTOCOMMIT")
     try:
@@ -64,9 +67,15 @@ def storage() -> FakeStorage:
 
 
 @pytest.fixture
-def api(db: Session, storage: FakeStorage) -> Iterator[TestClient]:
-    """The real app + real Postgres, with storage replaced by an in-memory fake."""
+def queue() -> FakeQueue:
+    return FakeQueue()
+
+
+@pytest.fixture
+def api(db: Session, storage: FakeStorage, queue: FakeQueue) -> Iterator[TestClient]:
+    """The real app + real Postgres, with storage and the job queue replaced by in-memory fakes."""
     app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_queue] = lambda: queue
     app.dependency_overrides.pop(get_db, None)
     yield TestClient(app)
     app.dependency_overrides.clear()

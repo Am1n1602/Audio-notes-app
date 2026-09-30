@@ -1,4 +1,9 @@
-"""Phase 0 smoke test: prove the real Gnani Batch STT flow from the command line."""
+"""Phase 0 smoke test: prove the real Gnani Batch STT flow from the command line.
+
+Deliberately standalone (httpx only, no import of the app): it was the proof that the provider works before any
+backend existed, and it still runs without the backend installed. The app's own client is providers/gnani.py; the
+tests in test_gnani_smoke.py run with the main suite (pytest) so this copy cannot silently rot.
+"""
 
 from __future__ import annotations
 

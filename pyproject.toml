@@ -1,7 +1,7 @@
 # Tool configuration only (deps live in backend/requirements*.txt). Run from the repo root.
 [tool.pytest.ini_options]
-testpaths = ["backend/tests", "worker/tests"]
-pythonpath = ["backend", "."]
+testpaths = ["backend/tests", "worker/tests", "scripts"]
+pythonpath = ["backend", ".", "scripts"]  # scripts: the Phase 0 provider probe and its tests
 
 [tool.ruff]
 line-length = 120
@@ -26,8 +26,8 @@ explicit_package_bases = true
 exclude = ["scripts/"]
 
 [[tool.mypy.overrides]]
-module = ["celery", "celery.*", "boto3", "boto3.*", "botocore", "botocore.*"]
-ignore_missing_imports = true  # celery and boto3 ship no type stubs (the S3 client is typed Any in one class)
+module = ["celery", "celery.*", "kombu", "kombu.*", "boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true  # celery, kombu and boto3 ship no type stubs (the S3 client is typed Any in one class)
 
 [[tool.mypy.overrides]]
 module = ["worker.tasks"]

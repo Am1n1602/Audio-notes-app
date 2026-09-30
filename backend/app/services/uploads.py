@@ -1,14 +1,17 @@
-"""Upload lifecycle: initiate (validate, create the job, sign a URL) and complete (verify the object, mark uploaded)."""
+"""Upload lifecycle: initiate (validate, sign a URL), complete (verify, hand to the worker), retry."""
 
 import logging
 import uuid
 
 from sqlalchemy.orm import Session
 
+from app.core import failures
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.core.failures import Failure
 from app.core.logging import log_event
 from app.db.models import AudioJob, JobStatus
+from app.providers.queue import JobQueue, QueueError
 from app.providers.storage import ObjectStorage, StorageError
 from app.services import jobs
 from app.services.upload_rules import object_key, validate_upload
@@ -44,12 +47,12 @@ def initiate_upload(
     return job, url, upload.mime_type
 
 
-def complete_upload(db: Session, storage: ObjectStorage, job_id: uuid.UUID) -> tuple[AudioJob, bool]:
-    """Confirm the browser's upload really landed in storage. Returns (job, this_call_made_the_transition).
+def complete_upload(db: Session, storage: ObjectStorage, queue: JobQueue, job_id: uuid.UUID) -> tuple[AudioJob, bool]:
+    """Confirm the browser's upload really landed in storage, then hand the job to the worker.
+    Returns (job, this_call_made_the_transition).
 
     Safe to call twice, or concurrently: only the call that wins the guarded UPLOADING -> UPLOADED transition
-    reports True. Phase 3 will enqueue the processing task only for that caller, which is what stops a duplicate
-    /complete from creating two processing runs.
+    enqueues the processing task, which is what stops a duplicate /complete from starting two processing runs.
     """
     job = jobs.get_job(db, job_id)
     if job.status is not JobStatus.UPLOADING:
@@ -88,7 +91,48 @@ def complete_upload(db: Session, storage: ObjectStorage, job_id: uuid.UUID) -> t
         raise AppError(409, "UPLOAD_SIZE_MISMATCH", message)
 
     moved = jobs.transition(db, job.id, JobStatus.UPLOADING, JobStatus.UPLOADED)
-    db.refresh(job)  # the guarded UPDATE bypassed the ORM, so reload what is now in the row
     if moved:
         log_event(logger, "upload_completed", job_id=job.id, size_bytes=job.size_bytes)
+        _enqueue_or_fail(db, queue, job.id)
+        # Enqueue first, mark QUEUED second: if we crash in between the worker still finds an UPLOADED job and
+        # advances it itself. False here just means the worker got there first.
+        jobs.transition(db, job.id, JobStatus.UPLOADED, JobStatus.QUEUED)
+    db.refresh(job)  # the guarded UPDATEs bypassed the ORM, so reload what is now in the row
     return job, moved
+
+
+def retry_upload(db: Session, queue: JobQueue, job_id: uuid.UUID) -> AudioJob:
+    """User pressed Retry on a failed job. Starts a brand-new attempt (it will win its own claim) and re-enqueues.
+
+    Only failures where trying again can plausibly help are retryable (failures.RETRYABLE_CODES). A second Retry
+    while the first is running changes nothing: only the call that wins FAILED -> QUEUED enqueues.
+    """
+    job = jobs.get_job(db, job_id)
+    if job.status is JobStatus.FAILED and job.error_code not in failures.RETRYABLE_CODES:
+        raise AppError(409, "NOT_RETRYABLE", "This upload cannot be retried. Please upload the file again.")
+    if job.status not in (JobStatus.FAILED, JobStatus.QUEUED, JobStatus.TRANSCRIBING, JobStatus.SUMMARIZING):
+        raise AppError(409, "NOT_RETRYABLE", "Only a failed upload can be retried.")
+    # A transcript is only ever saved when transcription finished (a full retry clears it), so a failed job that has
+    # one failed at or after the summary, whatever its error code says (a crash records INTERNAL_ERROR, a dead queue
+    # overwrites the code with QUEUE_UNAVAILABLE). It resumes at the summary: nothing is transcribed twice.
+    resume_summary = bool(job.transcript)
+    if job.status is JobStatus.FAILED and jobs.requeue_failed(db, job.id, resume_summary=resume_summary):
+        log_event(
+            logger, "job_retried", job_id=job.id, previous_error_code=job.error_code, resumes_at_summary=resume_summary
+        )
+        _enqueue_or_fail(db, queue, job.id)
+    db.refresh(job)
+    return job
+
+
+def _enqueue_or_fail(db: Session, queue: JobQueue, job_id: uuid.UUID) -> None:
+    try:
+        queue.enqueue_process_job(job_id)
+    except QueueError as exc:
+        failure = Failure(
+            failures.QUEUE_UNAVAILABLE,
+            "Your file is uploaded, but we could not start processing it. Please press Retry.",
+        )
+        jobs.fail_job(db, job_id, failure)
+        log_event(logger, "job_failed", job_id=job_id, error_code=failure.code, cause=type(exc).__name__)
+        raise AppError(503, failure.code, failure.message) from exc
