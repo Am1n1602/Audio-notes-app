@@ -1,0 +1,34 @@
+# Tool configuration only (deps live in backend/requirements*.txt). Run from the repo root.
+[tool.pytest.ini_options]
+testpaths = ["backend/tests", "worker/tests"]
+pythonpath = ["backend", "."]
+
+[tool.ruff]
+line-length = 120
+src = ["backend", "."]  # so `app` and `worker` are sorted as first-party imports
+extend-exclude = ["backend/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]  # Depends() in signatures is FastAPI's normal idiom
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E501"]  # Phase 0 provider scripts: long message strings are fine
+"scripts/test_*.py" = ["B023"]  # lambdas in loops are called immediately by expect_error()
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = ["backend", "backend/tests"]
+explicit_package_bases = true
+exclude = ["scripts/"]
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*", "boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true  # celery and boto3 ship no type stubs (the S3 client is typed Any in one class)
+
+[[tool.mypy.overrides]]
+module = ["worker.tasks"]
+disallow_untyped_decorators = false  # @celery_app.task is untyped for the same reason

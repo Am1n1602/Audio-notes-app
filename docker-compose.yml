@@ -1,0 +1,33 @@
+# Local development services only (Postgres + Redis). The app itself runs on the host; see README.
+# Bound to 127.0.0.1 so the throwaway dev password is not reachable from the LAN.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped  # comes back after Docker Desktop restarts; without it the DB silently stays down
+    environment:
+      POSTGRES_USER: audio
+      POSTGRES_PASSWORD: audio
+      POSTGRES_DB: audio_notes
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audio -d audio_notes"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
