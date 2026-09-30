@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from fakes import FakeQueue, FakeStorage
 from fastapi.testclient import TestClient
-from helpers import assert_test_database
+from helpers import HEADERS_A, HEADERS_B, assert_test_database
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -77,5 +77,11 @@ def api(db: Session, storage: FakeStorage, queue: FakeQueue) -> Iterator[TestCli
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_queue] = lambda: queue
     app.dependency_overrides.pop(get_db, None)
-    yield TestClient(app)
+    yield TestClient(app, headers=HEADERS_A)  # browser A
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def api_b(api: TestClient) -> TestClient:
+    """A second browser talking to the same app (and the same fakes)."""
+    return TestClient(app, headers=HEADERS_B)

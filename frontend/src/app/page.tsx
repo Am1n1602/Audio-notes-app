@@ -1,14 +1,20 @@
-import ApiStatus from "@/components/ApiStatus";
+import { RecordingList } from "@/components/recording-list";
+import { UploadPanel } from "@/components/upload-panel";
 
 export default function Home() {
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-6 py-16">
-      <h1 className="text-3xl font-semibold">Audio Notes</h1>
-      <p className="text-neutral-600 dark:text-neutral-400">
-        Upload a recording and get a transcript and summary. The upload flow arrives in a later phase;
-        for now this page only checks that the services are connected.
-      </p>
-      <ApiStatus />
-    </main>
+    <div className="space-y-16">
+      <section aria-labelledby="upload-heading">
+        <h1 id="upload-heading" className="font-serif text-3xl font-semibold tracking-tight sm:text-4xl">
+          Upload a recording
+        </h1>
+        <p className="mb-7 mt-3 max-w-prose text-soft">
+          You get back a transcript and a short summary. Once the file is uploaded nothing has to stay open: come
+          back to the recording whenever you like.
+        </p>
+        <UploadPanel />
+      </section>
+      <RecordingList />
+    </div>
   );
 }

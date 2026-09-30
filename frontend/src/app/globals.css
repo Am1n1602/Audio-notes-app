@@ -1,18 +1,139 @@
 @import "tailwindcss";
 
+/*
+  Audio Notes: one reading column on cool paper, ink for text, one amber signal for "something is happening".
+  Every colour is a token; dark mode only swaps the values. Status colours carry a word next to them, never alone.
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #eef1ef;
+  --sheet: #f8faf9;
+  --ink: #1d2826;
+  --ink-soft: #4f5d5a;
+  --rule: #d3d9d6;
+  --signal: #b97700; /* the running stage. 3.2:1 on paper, and always labelled */
+  --signal-light: #ebb542; /* the band that sweeps across it */
+  --signal-ink: #7a4d00; /* amber as text */
+  --ok: #2f6b4f;
+  --bad: #a3382d;
+  --bad-wash: #f5e6e3;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --paper: #131918;
+    --sheet: #1a2120;
+    --ink: #e7ecea;
+    --ink-soft: #9fada9;
+    --rule: #2d3836;
+    --signal: #e0a030;
+    --signal-light: #f6cd70;
+    --signal-ink: #f0bd55;
+    --ok: #6fbf98;
+    --bad: #ec8f83;
+    --bad-wash: #2b1a18;
+    color-scheme: dark;
   }
 }
 
+@theme inline {
+  --color-paper: var(--paper);
+  --color-sheet: var(--sheet);
+  --color-ink: var(--ink);
+  --color-soft: var(--ink-soft);
+  --color-rule: var(--rule);
+  --color-signal: var(--signal);
+  --color-signal-light: var(--signal-light);
+  --color-signal-ink: var(--signal-ink);
+  --color-ok: var(--ok);
+  --color-bad: var(--bad);
+  --color-bad-wash: var(--bad-wash);
+
+  /* Schibsted Grotesk for the interface, Literata for everything meant to be read. */
+  --font-sans: var(--font-ui), ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-serif: var(--font-read), ui-serif, Georgia, serif;
+
+  /* Two radii, used on purpose: small for controls, larger for the one surface that holds a file. */
+  --radius-control: 4px;
+  --radius-surface: 10px;
+}
+
+html {
+  background: var(--paper);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--signal-light);
+  color: #1d2826;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* Text that is read at length: generous leading, a comfortable measure, and the browser picks a script-appropriate
+   font and shaping from the lang attribute the page sets (Hindi, Tamil, ...). */
+.reading {
+  font-family: var(--font-serif);
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  max-width: 42rem;
+  overflow-wrap: anywhere;
+}
+
+/* --- motion: only where it says what state something is in ---------------------------------------------------- */
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+@keyframes beat {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ruler-running {
+  position: relative;
+  overflow: hidden;
+}
+
+.ruler-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, var(--signal-light), transparent);
+  animation: sweep 1.9s ease-in-out infinite;
+}
+
+.beat {
+  animation: beat 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ruler-running::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.35; /* still visibly "on", just not moving */
+  }
+  .beat {
+    animation: none;
+  }
 }

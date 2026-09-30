@@ -14,6 +14,7 @@ job being at any status after the upload. Stop the worker for a storage-only che
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 
 import httpx
@@ -36,7 +37,8 @@ def initiate(api: httpx.Client, filename: str, size: int) -> dict:  # type: igno
 
 def main(base_url: str, audio: Path) -> int:
     data = audio.read_bytes()
-    api = httpx.Client(base_url=base_url, timeout=60)
+    api = httpx.Client(base_url=base_url, timeout=60, headers={"X-Client-Id": str(uuid.uuid4())})
+    other_browser = httpx.Client(base_url=base_url, timeout=60, headers={"X-Client-Id": str(uuid.uuid4())})
 
     print("1. happy path")
     job = initiate(api, audio.name, len(data))
@@ -78,7 +80,29 @@ def main(base_url: str, audio: Path) -> int:
     still = api.post(f"/api/uploads/{wrong_size['id']}/complete")
     check("after the refused upload, complete still says not uploaded", still.status_code == 409, still.text[:80])
 
-    print("3. input validation")
+    print("3. per-browser history")
+    anonymous = httpx.Client(base_url=base_url, timeout=60).get("/api/uploads")
+    check(
+        "no client id -> 401",
+        anonymous.status_code == 401 and anonymous.json()["error"]["code"] == "CLIENT_ID_REQUIRED",
+    )
+    theirs = other_browser.get(f"/api/uploads/{job['id']}")
+    missing = other_browser.get(f"/api/uploads/{uuid.uuid4()}")
+    check(
+        "another browser cannot read my job (404, same as a missing one)",
+        theirs.status_code == 404 and theirs.json() == missing.json(),
+    )
+    check(
+        "another browser's history does not list it",
+        all(item["id"] != job["id"] for item in other_browser.get("/api/uploads").json()),
+    )
+    check(
+        "another browser cannot complete or retry it",
+        other_browser.post(f"/api/uploads/{job['id']}/complete").status_code == 404
+        and other_browser.post(f"/api/uploads/{job['id']}/retry").status_code == 404,
+    )
+
+    print("4. input validation")
     res = api.post("/api/uploads/initiate", json={"filename": "notes.txt", "size_bytes": 10})
     check("unsupported type -> 422 with a readable message", res.status_code == 422 and "not supported" in res.text)
 

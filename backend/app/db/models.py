@@ -34,6 +34,11 @@ class AudioJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 
+    # Which browser created this job: the SHA-256 (hex) of the random client id that browser generated and sends in the
+    # X-Client-Id header. Hashed so a database leak does not hand out working ids. NULL rows belong to nobody and are
+    # never shown. Not authentication: it only keeps one browser's history out of another's (app/api/owner.py).
+    owner_id: Mapped[str | None] = mapped_column(String(64), index=True)
+
     original_filename: Mapped[str] = mapped_column(String(255))  # display only, never used as a storage path
     object_key: Mapped[str] = mapped_column(String(512), unique=True)
     mime_type: Mapped[str] = mapped_column(String(100))

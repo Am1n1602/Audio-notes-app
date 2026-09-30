@@ -22,8 +22,20 @@ AUDIO_TYPES: dict[str, str] = {
     ".amr": "audio/amr",
 }
 
-# Languages Gnani Batch accepts. Up to three comma-separated codes turn on language identification.
-SUPPORTED_LANGUAGES = frozenset({"bn-IN", "en-IN", "hi-IN", "kn-IN", "ml-IN", "mr-IN", "ta-IN", "te-IN"})
+# Languages Gnani Batch accepts, with the names the UI shows. Up to three comma-separated codes turn on language
+# identification.
+LANGUAGE_NAMES: dict[str, str] = {
+    "bn-IN": "Bengali",
+    "en-IN": "English (India)",
+    "hi-IN": "Hindi",
+    "kn-IN": "Kannada",
+    "ml-IN": "Malayalam",
+    "mr-IN": "Marathi",
+    "ta-IN": "Tamil",
+    "te-IN": "Telugu",
+}
+SUPPORTED_LANGUAGES = frozenset(LANGUAGE_NAMES)
+DEFAULT_LANGUAGE = "en-IN"
 MAX_LANGUAGES = 3
 MAX_FILENAME_LENGTH = 255
 

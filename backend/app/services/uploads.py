@@ -24,6 +24,7 @@ def initiate_upload(
     storage: ObjectStorage,
     settings: Settings,
     *,
+    owner_id: str,
     filename: str,
     size_bytes: int,
     language_code: str,
@@ -37,6 +38,7 @@ def initiate_upload(
     job = jobs.create_job(
         db,
         job_id=job_id,
+        owner_id=owner_id,
         original_filename=upload.original_filename,
         object_key=key,
         mime_type=upload.mime_type,
@@ -123,6 +125,14 @@ def retry_upload(db: Session, queue: JobQueue, job_id: uuid.UUID) -> AudioJob:
         _enqueue_or_fail(db, queue, job.id)
     db.refresh(job)
     return job
+
+
+def audio_url(storage: ObjectStorage, settings: Settings, job: AudioJob) -> str:
+    """A signed link for playing the recording back. Only once the upload was verified: before that there may be no
+    object, or (after a size mismatch) the wrong one."""
+    if job.status is JobStatus.UPLOADING or job.error_code == failures.UPLOAD_SIZE_MISMATCH:
+        raise AppError(409, "AUDIO_NOT_AVAILABLE", "The recording has not finished uploading.")
+    return storage.create_download_url(job.object_key, settings.audio_url_expires_seconds)
 
 
 def _enqueue_or_fail(db: Session, queue: JobQueue, job_id: uuid.UUID) -> None:

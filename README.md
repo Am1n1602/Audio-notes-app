@@ -22,15 +22,28 @@ The assignment explicitly requires Next.js, FastAPI, Postgres, storage, backgrou
 | UI | Tailwind CSS | Fast, consistent implementation |
 | Backend | FastAPI + Python | Explicit assignment requirement; strong async/API ecosystem |
 | ORM / migrations | SQLAlchemy 2 + Alembic | Explicit DB models and reproducible migrations |
-| Database | Managed PostgreSQL | Reliable persistent job/history state |
+| Database | PostgreSQL (Docker locally, **Neon** when deployed) | Reliable persistent job/history state; Neon's free plan fits a demo |
 | Object storage | S3-compatible private bucket | Large-file uploads, presigned URLs, no frontend proxying |
-| Queue | Redis | Simple durable-enough queue for the take-home architecture |
-| Worker | Celery | Clear background-job model and retry controls |
+| Queue | Redis locally; **Google Cloud Tasks** when deployed | Redis needs an always-on host and no free tier offers one (see Deployment below) |
+| Worker | Celery locally; the same step code behind a private HTTP endpoint when deployed | Clear background-job model and retry controls |
 | ASR | Gnani Prisma v2.5 Batch STT | Required provider and correct choice for long recordings |
 | Summary LLM | Groq (OpenAI-compatible API) behind a small adapter | Fast, has a free tier for a demo; the adapter keeps it replaceable |
-| Deployment | Vercel frontend + managed backend/worker services | Simple public demo topology |
+| Deployment | **Google Cloud Run** (API and step services) + Cloud Tasks + Neon; frontend on Vercel or Cloud Run | Scales to zero, so a demo can stay inside free allowances |
 
 Use one concrete provider combination and document it. Do not change providers mid-project unless a real deployment limitation forces it.
+
+### Deployment (Phase 8, planned)
+
+A real deployment limitation forced one change to the stack above. The design needs a worker process that runs all the time plus Redis, and none of the free tiers checked (Render, Railway, Fly.io, Cloud Run worker pools) runs one. But the worker is already a chain of short, repeatable steps that reschedule themselves through one interface (`JobQueue.enqueue_process_job(job_id, countdown)`), so in production the queue becomes **Cloud Tasks** and each step becomes one HTTP request:
+
+```text
+Browser -> Cloud Run "api" (public)  --enqueue-->  Cloud Tasks  --OIDC-->  Cloud Run "steps" (private)
+                                                                               |  runs ONE step (Gnani, Groq, Postgres)
+                                                                               +--> enqueues its own next step
+Neon Postgres, AWS S3 (uploads go browser -> S3 directly), Gnani, Groq
+```
+
+Nothing runs when nobody uses the demo. Locally nothing changes: Docker Postgres and Redis, Celery, `uvicorn`. The step logic, the state machine and all tests are shared; only the queue adapter and one endpoint differ. Hosting research and the detailed plan are in the architecture notes; this section is updated when Phase 8 is built.
 
 ## Important Gnani API fact
 
@@ -140,14 +153,14 @@ pip install -r backend/requirements-dev.txt
 # three terminals, from the repo root:
 uvicorn app.main:app --app-dir backend --reload --port 8000
 celery -A worker.celery_app worker -l info   # on Windows add: -P solo (prefork is unsupported there)
-(cd frontend && npm install && npm run dev)  # http://localhost:3000 shows API / Postgres / Redis status
+(cd frontend && npm install && npm run dev)  # http://localhost:3000 : upload, history, and /architecture
 ```
 
 Checks (all must pass):
 
 ```bash
 pytest && ruff check . && ruff format --check . && mypy backend/app worker
-(cd frontend && npm run lint && npm run typecheck && npm run build)
+(cd frontend && npm run lint && npm run typecheck && npm test && npm run build)
 ```
 
 Use `127.0.0.1`, not `localhost`, in `DATABASE_URL` / `REDIS_URL` on Windows: `localhost` tries IPv6 first
@@ -198,11 +211,15 @@ summary without transcribing again. The worker needs `GNANI_API_KEY` and `LLM_AP
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/uploads/initiate` | validate, create a job, return a signed URL to PUT the file to |
+| `POST /api/uploads/initiate` | validate, create a job owned by this browser, return a signed URL to PUT the file to |
 | `POST /api/uploads/{id}/complete` | verify the upload landed in storage, then queue it for the worker (idempotent) |
 | `POST /api/uploads/{id}/retry` | start a new attempt for a failed job, when `can_retry` is true (idempotent) |
-| `GET /api/uploads`, `GET /api/uploads/{id}` | history and job detail (status, stage message, transcript, summary, error, `can_retry`) |
+| `GET /api/uploads`, `GET /api/uploads/{id}` | this browser's history and a job's detail (status, stage message, transcript, summary, error, `can_retry`) |
+| `GET /api/uploads/{id}/audio` | a short-lived signed link to play the stored recording (never cached) |
+| `GET /api/config` | public and read-only: the file types, size limit and languages the backend accepts, so the page never copies them |
 | `GET /api/health` | Postgres and Redis status |
+
+**Per-browser history.** There are no accounts. The browser generates a random client id (a UUID v4), keeps it in `localStorage` and sends it in the `X-Client-Id` header on every `/api/uploads` call. Jobs are shown only to the browser that created them: another browser (or a caller who merely knows a job id) gets `404 JOB_NOT_FOUND`, identical to a job that does not exist, and a missing or malformed header gets `401 CLIENT_ID_REQUIRED` / `CLIENT_ID_INVALID`. This keeps visitors' uploads private from each other on a public demo; it is not authentication (clearing site data loses the history, another browser starts empty).
 
 Interactive docs are at `/docs` on the running API. Errors always look like `{"error": {"code", "message"}}`.
 

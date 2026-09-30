@@ -46,6 +46,7 @@ def create_job(
     db: Session,
     *,
     job_id: uuid.UUID,
+    owner_id: str,
     original_filename: str,
     object_key: str,
     mime_type: str,
@@ -54,6 +55,7 @@ def create_job(
 ) -> AudioJob:
     job = AudioJob(
         id=job_id,
+        owner_id=owner_id,
         original_filename=original_filename,
         object_key=object_key,
         mime_type=mime_type,
@@ -74,11 +76,12 @@ def get_job(db: Session, job_id: uuid.UUID) -> AudioJob:
     return job
 
 
-def list_jobs(db: Session, limit: int) -> list[AudioJob]:
+def list_jobs(db: Session, limit: int, owner_id: str) -> list[AudioJob]:
     # id as a tie-breaker keeps the order stable when two rows share a timestamp. The history list never shows the
     # big columns (a 4-hour transcript is ~200 KB), so they are not loaded: `defer` leaves them out of the SELECT.
     statement = (
         select(AudioJob)
+        .where(AudioJob.owner_id == owner_id)  # one browser's history only
         .options(defer(AudioJob.transcript), defer(AudioJob.summary), defer(AudioJob.summary_partials))
         .order_by(AudioJob.created_at.desc(), AudioJob.id.desc())
         .limit(limit)

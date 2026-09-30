@@ -2,6 +2,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from helpers import OWNER_A
 from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ def make_job(db: Session, name: str = "a.mp3") -> uuid.UUID:
     jobs.create_job(
         db,
         job_id=job_id,
+        owner_id=OWNER_A,
         original_filename=name,
         object_key=f"uploads/{job_id}/audio.mp3",
         mime_type="audio/mpeg",
@@ -41,8 +43,8 @@ def test_unknown_job_is_a_404_app_error(db: Session) -> None:
 
 def test_list_is_newest_first_and_limited(db: Session) -> None:
     ids = [make_job(db, f"{n}.mp3") for n in range(3)]
-    assert [j.id for j in jobs.list_jobs(db, 50)] == ids[::-1]
-    assert [j.id for j in jobs.list_jobs(db, 2)] == ids[::-1][:2]
+    assert [j.id for j in jobs.list_jobs(db, 50, OWNER_A)] == ids[::-1]
+    assert [j.id for j in jobs.list_jobs(db, 2, OWNER_A)] == ids[::-1][:2]
 
 
 def test_the_history_list_does_not_load_the_big_columns(db: Session) -> None:
@@ -52,7 +54,7 @@ def test_the_history_list_does_not_load_the_big_columns(db: Session) -> None:
     )
     db.commit()
     db.expunge_all()  # forget the cached row so list_jobs really loads it
-    (listed,) = jobs.list_jobs(db, 10)
+    (listed,) = jobs.list_jobs(db, 10, OWNER_A)
     assert {"transcript", "summary", "summary_partials"} <= inspect(listed).unloaded  # not fetched from Postgres
     assert listed.original_filename == "a.mp3"  # the columns the list shows are
     assert jobs.get_job(db, job_id).transcript == "x"  # and the detail still reads them on demand

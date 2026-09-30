@@ -2,6 +2,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from helpers import HEADERS_A
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,7 @@ from app.main import app
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     # raise_server_exceptions=False: behave like a real server and return the 500 response instead of re-raising
-    yield TestClient(app, raise_server_exceptions=False)
+    yield TestClient(app, raise_server_exceptions=False, headers=HEADERS_A)
     app.dependency_overrides.clear()
 
 

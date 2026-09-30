@@ -7,12 +7,13 @@ from pydantic import BaseModel, ConfigDict, computed_field
 from app.core.failures import RETRYABLE_CODES
 from app.db.models import JobStatus
 from app.schemas.summary import Summary
+from app.services.upload_rules import DEFAULT_LANGUAGE
 
 
 class InitiateRequest(BaseModel):
     filename: str
     size_bytes: int
-    language_code: str = "en-IN"  # one Gnani Batch code, or up to three comma-separated for auto-detection
+    language_code: str = DEFAULT_LANGUAGE  # one Gnani Batch code, or up to three comma-separated for auto-detection
 
 
 class UploadTarget(BaseModel):
@@ -59,3 +60,10 @@ class UploadDetail(UploadListItem):
     mime_type: str
     transcript: str | None
     summary: Summary | None
+
+
+class AudioLink(BaseModel):
+    """A short-lived signed link to the stored recording, for the audio player. A bearer credential while valid."""
+
+    url: str
+    expires_in_seconds: int

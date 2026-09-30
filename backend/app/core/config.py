@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # A single presigned PUT can carry at most 5 GB; 2 GiB leaves headroom and is far above 4 h of audio.
     max_upload_bytes: int = 2 * 1024**3
     upload_url_expires_seconds: int = 900  # S3 checks expiry when the request starts, not when it ends
+    audio_url_expires_seconds: int = 3600  # the signed link the player uses; the page asks for a new one when it lapses
 
     # Gnani Batch STT (used by the worker; the API never calls Gnani). Optional here so the API process can run
     # without provider secrets it never uses; the worker refuses to start without them (missing_worker_secrets).

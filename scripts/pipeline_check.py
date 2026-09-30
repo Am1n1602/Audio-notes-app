@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ SETTLED = {"COMPLETED", "FAILED"}
 
 def main(base_url: str, audio: Path, expect_error: str | None) -> int:
     data = audio.read_bytes()
-    api = httpx.Client(base_url=base_url, timeout=60)
+    # Each browser has its own random client id; a job is only visible to the id that created it.
+    api = httpx.Client(base_url=base_url, timeout=60, headers={"X-Client-Id": str(uuid.uuid4())})
 
     init = api.post("/api/uploads/initiate", json={"filename": audio.name, "size_bytes": len(data)})
     assert init.status_code == 201, init.text
