@@ -8,7 +8,7 @@ import pytest
 from fakes import FakeQueue, FakeStorage
 from fastapi.testclient import TestClient
 from helpers import job_in_status
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.core import failures
@@ -200,6 +200,73 @@ def test_a_summary_failure_can_still_be_retried_after_the_deletion(
     res = api.post(f"/api/uploads/{job_id}/retry")
     assert res.status_code == 200 and res.json()["status"] == "SUMMARIZING"
     assert queue.enqueued == [(job_id, 0)]
+
+
+@pytest.mark.parametrize("code", [failures.TRANSCRIPTION_TIMEOUT, failures.INTERNAL_ERROR, failures.QUEUE_UNAVAILABLE])
+def test_a_crash_after_the_transcript_was_saved_stays_retryable_after_the_deletion(
+    api: TestClient, db: Session, storage: FakeStorage, queue: FakeQueue, code: str
+) -> None:
+    """The Retry button must not disappear for a retry that would work: a transcript is saved, so resuming at the
+    summary never needs the deleted recording, whatever the failure's code says (a crash or a dead queue can happen
+    there)."""
+    job_id = job_in_status(db, JobStatus.SUMMARIZING)
+    db.execute(update(AudioJob).where(AudioJob.id == job_id).values(transcript="hello world"))
+    db.commit()
+    fail(db, job_id, code)
+    retention.expire_recording(db, storage, job_id)
+    assert api.get(f"/api/uploads/{job_id}").json()["can_retry"] is True
+    assert api.post(f"/api/uploads/{job_id}/retry").status_code == 200
+
+
+@pytest.mark.parametrize("audio_deleted", [False, True])
+@pytest.mark.parametrize("has_transcript", [False, True])
+@pytest.mark.parametrize(
+    "code",
+    [
+        failures.TRANSCRIPTION_TIMEOUT,
+        failures.INTERNAL_ERROR,
+        failures.QUEUE_UNAVAILABLE,
+        failures.SUMMARY_UNAVAILABLE,
+        failures.EMPTY_TRANSCRIPT,  # never retryable
+    ],
+)
+def test_the_retry_button_is_offered_exactly_when_retry_would_be_accepted(
+    api: TestClient, db: Session, storage: FakeStorage, code: str, has_transcript: bool, audio_deleted: bool
+) -> None:
+    """can_retry (schema) and retry_upload (service) are two statements of one rule. Every combination must agree, in
+    the detail, in the list, and with what the retry endpoint then really does."""
+    job_id = job_in_status(db, JobStatus.SUMMARIZING if has_transcript else JobStatus.TRANSCRIBING)
+    if has_transcript:
+        db.execute(update(AudioJob).where(AudioJob.id == job_id).values(transcript="hello world"))
+        db.commit()
+    fail(db, job_id, code)
+    if audio_deleted:
+        retention.expire_recording(db, storage, job_id)
+
+    offered = api.get(f"/api/uploads/{job_id}").json()["can_retry"]
+    assert {row["id"]: row["can_retry"] for row in api.get("/api/uploads").json()}[str(job_id)] is offered
+    assert api.post(f"/api/uploads/{job_id}/retry").status_code == (200 if offered else 409)
+
+
+def test_a_failed_statement_does_not_stop_the_rest_of_the_sweep(
+    db: Session, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a database error Postgres refuses every further statement on that connection until a rollback. Without one,
+    each remaining job in the batch would be counted as failed without being tried."""
+    first, second = job_in_status(db, JobStatus.QUEUED), job_in_status(db, JobStatus.QUEUED)
+    age(db, first, RETENTION * 3)  # the oldest: tried first
+    age(db, second, RETENTION * 2)
+    real, calls = jobs.mark_audio_deleted, {"n": 0}
+
+    def broken_once(session: Session, job_id: uuid.UUID) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            session.execute(text("SELECT * FROM no_such_table"))  # fails, and aborts the transaction
+        return real(session, job_id)
+
+    monkeypatch.setattr(jobs, "mark_audio_deleted", broken_once)
+    assert retention.expire_overdue(db, storage, get_settings()) == (1, 1)
+    assert deleted_at(db, first) is None and deleted_at(db, second) is not None  # the first waits for the next sweep
 
 
 # --- scheduling it at /initiate --------------------------------------------------------------------------------------

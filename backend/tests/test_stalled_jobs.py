@@ -3,6 +3,7 @@ progress' for ever: when its owner's page asks about it, it is given a new step.
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fakes import FakeQueue
@@ -143,3 +144,14 @@ def test_the_claim_itself_refuses_a_job_that_is_not_waiting_for_a_step(db: Sessi
     job_id = job_in_status(db, status) if status is JobStatus.UPLOADING else finished_job(db, status)
     silent_for(db, job_id, AFTER * 10)
     assert jobs.claim_stalled(db, [job_id], AFTER) == []
+
+
+def test_the_list_reports_the_activity_time_the_revival_just_wrote(
+    api: TestClient, db: Session, queue: FakeQueue
+) -> None:
+    """The claim updates the row behind the ORM's back; the list must show what it wrote, not the old quiet time."""
+    job_id = job_in_status(db, JobStatus.TRANSCRIBING)
+    silent_for(db, job_id, AFTER + 600)
+    row = next(r for r in api.get("/api/uploads").json() if r["id"] == str(job_id))
+    assert queue.enqueued == [(job_id, 0)]  # it was revived by this very call
+    assert (datetime.now(UTC) - datetime.fromisoformat(row["updated_at"])).total_seconds() < 60

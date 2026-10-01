@@ -85,7 +85,10 @@ def list_uploads(
 ) -> list[UploadListItem]:
     """This browser's uploads, newest first. Any that stopped moving are given a new step (recovery.revive_stalled)."""
     listed = jobs.list_jobs(db, limit, owner)
-    recovery.revive_stalled(db, queue, settings, listed)
+    revived = recovery.revive_stalled(db, queue, settings, listed)
+    for job in listed:
+        if job.id in revived:  # the claim wrote these behind the ORM's back (the big deferred columns stay unloaded)
+            db.refresh(job, attribute_names=["updated_at", "next_step_at"])
     return [UploadListItem.model_validate(job) for job in listed]
 
 

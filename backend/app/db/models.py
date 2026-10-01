@@ -3,9 +3,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Enum, Float, Integer, String, Text, Uuid, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Enum, Float, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, mapped_column
 
 from app.db.base import Base
 
@@ -50,7 +50,6 @@ class AudioJob(Base):
         Enum(JobStatus, native_enum=False, length=20, create_constraint=False, name="job_status"),
         index=True,
     )
-    progress_percent: Mapped[int | None] = mapped_column(Integer)
     progress_message: Mapped[str | None] = mapped_column(String(255))
 
     # One Gnani job per audio job, ever: a retried submission must never leave a second job behind.
@@ -68,6 +67,9 @@ class AudioJob(Base):
     next_step_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     transcript: Mapped[str | None] = mapped_column(Text)
+    # Whether a transcript is saved, worked out by the database (IS NOT NULL does not read the text), so the history
+    # list, which never loads transcripts, can still tell. Not a column.
+    has_transcript: Mapped[bool] = column_property(transcript.is_not(None))
     summary: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True)
     )  # {overview, key_points, action_items, ...}

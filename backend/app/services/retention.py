@@ -52,6 +52,9 @@ def expire_overdue(
             deleted += expire_recording(db, storage, job_id)
         except Exception:  # storage down for this key, or a database blip: leave it for the next sweep
             logger.exception("event=recording_delete_failed job_id=%s", job_id)
+            # A failed statement leaves Postgres' transaction aborted (and a dropped connection leaves the session
+            # waiting for a rollback): without this, every later job in the batch would fail too, untried.
+            db.rollback()
             failed += 1
     log_event(logger, "expiry_sweep_done", deleted=deleted, failed=failed)
     return deleted, failed

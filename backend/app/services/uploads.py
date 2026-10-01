@@ -141,7 +141,7 @@ def retry_upload(db: Session, queue: JobQueue, job_id: uuid.UUID) -> AudioJob:
     # A transcript is only ever saved when transcription finished (a full retry clears it), so a failed job that has
     # one failed at or after the summary, whatever its error code says (a crash records INTERNAL_ERROR, a dead queue
     # overwrites the code with QUEUE_UNAVAILABLE). It resumes at the summary: nothing is transcribed twice.
-    resume_summary = bool(job.transcript)
+    resume_summary = job.has_transcript  # the same fact the schema's can_retry uses, so the two cannot disagree
     if job.status is JobStatus.FAILED and job.audio_deleted_at is not None and not resume_summary:
         raise AppError(
             409,

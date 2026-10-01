@@ -2,9 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from app.core.failures import RETRYABLE_CODES, RETRYABLE_WITHOUT_AUDIO
+from app.core.failures import RETRYABLE_CODES
 from app.db.models import JobStatus
 from app.schemas.summary import Summary
 from app.services.upload_rules import DEFAULT_LANGUAGE
@@ -49,14 +49,17 @@ class UploadListItem(BaseModel):
     updated_at: datetime
     completed_at: datetime | None
     audio_deleted_at: datetime | None  # set once the recording itself is gone; the transcript and summary stay
+    has_transcript: bool = Field(exclude=True)  # only feeds can_retry below; not part of the API
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def can_retry(self) -> bool:
-        """Whether the UI should offer a Retry button: only for failures where trying again can plausibly help, and
-        not when it would need a recording that has been deleted (a summary retry only needs the saved transcript)."""
-        codes = RETRYABLE_CODES if self.audio_deleted_at is None else RETRYABLE_WITHOUT_AUDIO
-        return self.status is JobStatus.FAILED and self.error_code in codes
+        """Whether the UI should offer a Retry button. The same rule services/uploads.retry_upload enforces, so the
+        button is never offered for a retry that would be refused, nor hidden for one that would work: only for failures
+        where trying again can help, and, once the recording has been deleted, only if a transcript was saved (the
+        retry then resumes at the summary, which reads the transcript and never the audio)."""
+        audio_available = self.audio_deleted_at is None or self.has_transcript
+        return self.status is JobStatus.FAILED and self.error_code in RETRYABLE_CODES and audio_available
 
 
 class UploadDetail(UploadListItem):
