@@ -16,7 +16,7 @@ export type UploadState =
   | { phase: "uploading"; file: FileInfo; jobId: string; loaded: number; total: number; movedAt: number } // movedAt: when bytes last left the browser
   | { phase: "finishing"; file: FileInfo; jobId: string } // bytes are in storage; asking the backend to verify them
   | { phase: "done"; file: FileInfo; jobId: string } // the backend accepted it: the job page takes over
-  | { phase: "failed"; file: FileInfo; message: string };
+  | { phase: "failed"; file: FileInfo; message: string; jobId?: string }; // jobId: the file did arrive, only the check failed
 
 export type BusyState = Extract<UploadState, { phase: "preparing" | "uploading" | "finishing" }>;
 
@@ -43,6 +43,9 @@ const PROGRESS_EVERY_MS = 100; // bytes arrive in a flood; the screen only needs
 const FINISH_RETRY_MS = [1500, 3000, 5000];
 // Completing right after the last byte can briefly say "not there yet", or storage can hiccup: both are worth a retry.
 const RETRYABLE_FINISH = new Set(["UPLOAD_NOT_FOUND", "STORAGE_UNAVAILABLE", "NETWORK"]);
+// If the check still fails after those retries for one of these, the bytes are in storage and only the answer was lost, so
+// "Try again" asks the check again instead of sending the whole file a second time.
+const FILE_ARRIVED = new Set(["STORAGE_UNAVAILABLE", "NETWORK"]);
 
 export function createUploadStore(deps: UploadDeps = realDeps) {
   let state: UploadState = { phase: "idle" };
@@ -67,10 +70,19 @@ export function createUploadStore(deps: UploadDeps = realDeps) {
         if (error.code === "QUEUE_UNAVAILABLE") return set({ phase: "done", file, jobId });
         const wait = FINISH_RETRY_MS[attempt];
         if (!RETRYABLE_FINISH.has(error.code) || wait === undefined) {
-          return set({ phase: "failed", file, message: error.message });
+          const arrived = FILE_ARRIVED.has(error.code) ? { jobId } : {};
+          return set({ phase: "failed", file, message: error.message, ...arrived });
         }
         await deps.wait(wait);
       }
+    }
+  }
+
+  async function confirm(jobId: string, file: FileInfo): Promise<void> {
+    try {
+      await finish(jobId, file);
+    } catch {
+      set({ phase: "failed", file, message: "Something went wrong. Please try again." });
     }
   }
 
@@ -110,11 +122,7 @@ export function createUploadStore(deps: UploadDeps = realDeps) {
       return set({ phase: "failed", file: info, message });
     }
 
-    try {
-      await finish(jobId, info);
-    } catch {
-      set({ phase: "failed", file: info, message: "Something went wrong. Please try again." });
-    }
+    await confirm(jobId, info);
   }
 
   return {
@@ -131,9 +139,11 @@ export function createUploadStore(deps: UploadDeps = realDeps) {
     cancel() {
       current?.abort.abort();
     },
-    /** Try the same file again (a new upload: the failed one cannot be resumed). */
+    /** Try again: ask for the check once more if the file had arrived, else send it again (a new upload). */
     retry(): Promise<void> {
-      return current && state.phase === "failed" ? run(current.file, current.languageCode) : Promise.resolve();
+      if (!current || state.phase !== "failed") return Promise.resolve();
+      const { jobId, file } = state;
+      return jobId ? confirm(jobId, file) : run(current.file, current.languageCode);
     },
     /** Clear a finished or failed upload from view. */
     dismiss() {

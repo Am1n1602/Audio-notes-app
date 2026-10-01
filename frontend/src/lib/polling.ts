@@ -1,5 +1,7 @@
-import { isWorking } from "./status";
-import type { JobStatus } from "./types";
+import { isWorking, uploadAbandoned } from "./status";
+import type { JobStatus, UploadListItem } from "./types";
+
+type Pollable = Pick<UploadListItem, "status" | "created_at">;
 
 // The page re-asks the backend while a job is moving and stops when it is not. These are the only timing rules.
 
@@ -14,13 +16,24 @@ export function pollDelay(status: JobStatus): number | null {
   return null;
 }
 
+/**
+ * The next check of one job. An upload whose signed link has expired is not asked about again: it can only change if
+ * somebody finishes it elsewhere, and a person coming back to the tab asks once anyway, which picks that up. Without
+ * this, a cancelled upload (which the backend keeps as "uploading" forever) would be polled for as long as a tab is open.
+ */
+export function jobPollDelay(job: Pollable, now: number, linkLifetimeSeconds: number): number | null {
+  return uploadAbandoned(job, now, linkLifetimeSeconds) ? null : pollDelay(job.status);
+}
+
 /** After a failed check, wait longer each time (2x) up to 30 s, so a server that is down is not hammered. */
 export function backoffDelay(baseMs: number, consecutiveFailures: number): number {
   return Math.min(MAX_BACKOFF_MS, baseMs * 2 ** Math.max(0, consecutiveFailures));
 }
 
 /** The history list only needs re-checking while something in it can still change. */
-export function listPollDelay(statuses: JobStatus[]): number | null {
-  const delays = statuses.map(pollDelay).filter((d): d is number => d !== null);
+export function listPollDelay(jobs: Pollable[], now: number, linkLifetimeSeconds: number): number | null {
+  const delays = jobs
+    .map((job) => jobPollDelay(job, now, linkLifetimeSeconds))
+    .filter((d): d is number => d !== null);
   return delays.length ? Math.min(...delays) * 2 : null; // the list can be a little less eager than the open job
 }

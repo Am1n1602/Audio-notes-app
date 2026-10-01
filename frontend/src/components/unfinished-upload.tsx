@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, completeUpload } from "@/lib/api";
 import { useNow } from "@/hooks/use-now";
 import { useUploadState } from "@/hooks/use-upload-state";
@@ -11,7 +11,8 @@ import { WorkingBar } from "./ruler";
 import { UploadProgress } from "./upload-progress";
 import { Button, ButtonLink, Notice } from "./ui";
 
-type Check = { kind: "checking" } | { kind: "absent" } | { kind: "failed"; message: string };
+// absent: the file is not in storage. stopped: and this tab was the one sending it, so it was cancelled or broke off.
+type Check = { kind: "checking" } | { kind: "absent"; stopped: boolean } | { kind: "failed"; message: string };
 
 /**
  * A job still marked "uploading". Either this tab is sending it (show the real progress), or it is not and the backend
@@ -30,19 +31,26 @@ export function UnfinishedUpload({
   const upload = useUploadState();
   const now = useNow(5000);
   const sending = isBusy(upload) && "jobId" in upload && upload.jobId === job.id;
+  const sentFromHere = useRef(false); // this tab was sending the file at some point
   const [check, setCheck] = useState<Check>({ kind: "checking" });
 
   const [attempt, setAttempt] = useState(0); // "Check again" bumps this to ask the backend once more
 
   useEffect(() => {
-    if (sending) return;
+    if (sending) {
+      sentFromHere.current = true;
+      return;
+    }
     let active = true;
     completeUpload(job.id)
       .then(() => active && onConfirmed())
       .catch((error: unknown) => {
         if (!active) return;
-        if (error instanceof ApiError && error.code === "UPLOAD_NOT_FOUND") setCheck({ kind: "absent" });
-        else setCheck({ kind: "failed", message: error instanceof ApiError ? error.message : "Something went wrong." });
+        if (error instanceof ApiError && error.code === "UPLOAD_NOT_FOUND") {
+          setCheck({ kind: "absent", stopped: sentFromHere.current });
+        } else {
+          setCheck({ kind: "failed", message: error instanceof ApiError ? error.message : "Something went wrong." });
+        }
       });
     return () => {
       active = false;
@@ -54,13 +62,7 @@ export function UnfinishedUpload({
       <section aria-live="polite">
         <p className="font-serif text-xl">Uploading from this tab</p>
         <div className="mt-4">
-          {upload.phase === "uploading" ? (
-            <>
-              <UploadProgress upload={upload} />
-            </>
-          ) : (
-            <WorkingBar label="Checking the file" />
-          )}
+          {upload.phase === "uploading" ? <UploadProgress upload={upload} /> : <WorkingBar label="Checking the file" />}
         </div>
         {upload.phase === "uploading" && (
           <div className="mt-5">
@@ -105,18 +107,23 @@ export function UnfinishedUpload({
     );
   }
 
-  // The file is not in storage. Early on that can just mean another tab is still sending it.
-  if (now !== null && uploadAbandoned(job, now, linkLifetimeSeconds)) {
+  // The file is not in storage. Early on that can just mean another tab is still sending it, unless this tab was the one
+  // sending it: then it stopped, and waiting would never end.
+  if (check.stopped || (now !== null && uploadAbandoned(job, now, linkLifetimeSeconds))) {
     return (
       <Notice
-        title="This upload didn't finish"
+        title={check.stopped ? "This upload was stopped" : "This upload didn't finish"}
         actions={
           <ButtonLink href="/" variant="primary">
             Upload it again
           </ButtonLink>
         }
       >
-        <p>The file never finished arriving, so there is nothing to transcribe.</p>
+        <p>
+          {check.stopped
+            ? "The file didn't finish arriving, so there is nothing to transcribe."
+            : "The file hasn't arrived and its upload link has expired. If it is still uploading in another tab, wait for it; otherwise upload it again."}
+        </p>
       </Notice>
     );
   }

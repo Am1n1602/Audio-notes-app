@@ -140,7 +140,7 @@ Background:
 
 ## Local development
 
-Requires Docker, Python 3.12 and Node 20+.
+Requires Docker, Python 3.12 and Node 22.12+ (the frontend test runner needs it).
 
 ```bash
 cp .env.example .env                       # then fill in the Gnani and storage values

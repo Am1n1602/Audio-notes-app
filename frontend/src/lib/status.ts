@@ -18,10 +18,6 @@ export function isWorking(status: JobStatus): boolean {
   return status === "UPLOADED" || status === "QUEUED" || status === "TRANSCRIBING" || status === "SUMMARIZING";
 }
 
-export function isFinished(status: JobStatus): boolean {
-  return status === "COMPLETED" || status === "FAILED";
-}
-
 // --- the ruler: four stages, each one in a state the backend's status decides --------------------------------------
 
 export const STAGES = [
@@ -93,7 +89,11 @@ export function failureAdvice(stage: FailureStage, canRetry: boolean): string {
 
 export type Tone = "working" | "done" | "failed" | "idle";
 
-/** A row is shown as "not finished" once the signed upload link could no longer have been used. */
+/**
+ * A row is shown as "not finished" once the signed upload link could no longer have been started. Storage only checks
+ * the link when a transfer begins, so one already running can outlive it: the tab doing the sending knows better and
+ * says so (displayStatus's `sendingHere`); another tab can only go by the age.
+ */
 export function uploadAbandoned(
   job: Pick<UploadListItem, "status" | "created_at">,
   now: number,
@@ -106,8 +106,9 @@ export function displayStatus(
   job: Pick<UploadListItem, "status" | "created_at">,
   now: number,
   uploadUrlExpiresSeconds: number,
+  sendingHere = false,
 ): { label: string; tone: Tone } {
-  if (uploadAbandoned(job, now, uploadUrlExpiresSeconds)) return { label: "Not finished", tone: "idle" };
+  if (!sendingHere && uploadAbandoned(job, now, uploadUrlExpiresSeconds)) return { label: "Not finished", tone: "idle" };
   if (job.status === "COMPLETED") return { label: STATUS_LABEL.COMPLETED, tone: "done" };
   if (job.status === "FAILED") return { label: STATUS_LABEL.FAILED, tone: "failed" };
   return { label: STATUS_LABEL[job.status], tone: "working" };

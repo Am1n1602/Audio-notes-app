@@ -121,9 +121,7 @@ export function UploadPanel() {
         </p>
         <div className="mt-4">
           {upload.phase === "uploading" ? (
-            <>
-              <UploadProgress upload={upload} />
-            </>
+            <UploadProgress upload={upload} />
           ) : (
             <>
               <WorkingBar label={upload.phase === "finishing" ? "Checking the file" : "Getting ready"} />

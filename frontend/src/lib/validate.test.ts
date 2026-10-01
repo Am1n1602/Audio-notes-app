@@ -33,6 +33,12 @@ describe("problemWith", () => {
     expect(problemWith({ name: ".wav", size: 100 }, config)).toMatch(/^That kind of files aren't supported/);
   });
 
+  it("reads the name the way the backend does: stray spaces and control characters do not hide the extension", () => {
+    expect(problemWith({ name: "meeting.wav ", size: 100 }, config)).toBeNull();
+    expect(problemWith({ name: " meeting.wav", size: 100 }, config)).toBeNull();
+    expect(problemWith({ name: "meeting.w\u0007av", size: 100 }, config)).toBeNull();
+  });
+
   it("uses the last extension of a name with several dots", () => {
     expect(problemWith({ name: "call.2026.09.30.wav", size: 100 }, config)).toBeNull();
   });

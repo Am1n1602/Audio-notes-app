@@ -3,7 +3,6 @@ import {
   displayStatus,
   failureAdvice,
   failureStage,
-  isFinished,
   isWorking,
   stageStates,
   STATUS_LABEL,
@@ -60,7 +59,6 @@ describe("labels", () => {
   it("knows which statuses can still change", () => {
     expect(["UPLOADED", "QUEUED", "TRANSCRIBING", "SUMMARIZING"].every((s) => isWorking(s as JobStatus))).toBe(true);
     expect(isWorking("UPLOADING") || isWorking("COMPLETED") || isWorking("FAILED")).toBe(false);
-    expect(isFinished("COMPLETED") && isFinished("FAILED") && !isFinished("QUEUED")).toBe(true);
   });
 });
 
@@ -71,6 +69,12 @@ describe("an upload nobody finished", () => {
     expect(uploadAbandoned({ status: "UPLOADING", created_at: created(20) }, now, 900)).toBe(true);
     expect(uploadAbandoned({ status: "UPLOADING", created_at: created(5) }, now, 900)).toBe(false);
     expect(uploadAbandoned({ status: "QUEUED", created_at: created(99) }, now, 900)).toBe(false);
+  });
+  it("is still 'uploading' while this tab is sending it, however long the transfer takes", () => {
+    expect(displayStatus({ status: "UPLOADING", created_at: created(45) }, now, 900, true)).toEqual({
+      label: "Uploading",
+      tone: "working",
+    });
   });
   it("shows a tone for each row", () => {
     expect(displayStatus({ status: "UPLOADING", created_at: created(20) }, now, 900)).toEqual({

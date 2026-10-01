@@ -34,6 +34,14 @@ def test_config_reports_the_limits_the_backend_enforces(api: TestClient) -> None
     assert config["max_languages"] == 3 and config["default_language_code"] == "en-IN"
 
 
+def test_a_page_on_another_origin_may_read_the_servers_clock() -> None:
+    """The page measures 'how long ago' against the server's time, which it learns from the Date header. (uvicorn adds
+    the header itself; the app's part is to expose it to a page on another origin.)"""
+    origin = get_settings().cors_origin_list[0]
+    res = TestClient(app).get("/api/config", headers={"Origin": origin})
+    assert "date" in res.headers["access-control-expose-headers"].lower()
+
+
 def test_every_language_has_a_readable_name() -> None:
     assert set(LANGUAGE_NAMES) == SUPPORTED_LANGUAGES
     assert all(name.strip() and name != code for code, name in LANGUAGE_NAMES.items())

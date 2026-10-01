@@ -34,6 +34,24 @@ describe("requests", () => {
     expect(init.cache).toBe("no-store");
   });
 
+  it("give every request a time limit, so a connection that never answers cannot stall what waits on it", async () => {
+    const api = await loadApi();
+    fetchMock.mockResolvedValue(respond(200, []));
+    await api.listUploads();
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("learn the server's clock from the response's Date header", async () => {
+    const api = await loadApi();
+    const clock = await import("./clock");
+    const serverTime = Date.now() + 5 * 60_000; // the server is five minutes ahead of this browser
+    fetchMock.mockResolvedValue(
+      new Response("[]", { status: 200, headers: { Date: new Date(serverTime).toUTCString() } }),
+    );
+    await api.listUploads();
+    expect(Math.abs(clock.serverNow() - serverTime)).toBeLessThan(2000); // the header has one-second resolution
+  });
+
   it("post the file's name, size and language as JSON when starting an upload", async () => {
     const api = await loadApi();
     fetchMock.mockResolvedValue(respond(201, { id: "job-1" }));

@@ -179,6 +179,26 @@ describe("after a failure", () => {
     expect(store.getState().phase).toBe("done");
   });
 
+  it("when only the final check failed, retry asks the check again instead of sending the whole file a second time", async () => {
+    const complete = vi.fn().mockRejectedValue(apiError("NETWORK", "Can't reach the server.", 0));
+    const { store, deps } = setup({ complete });
+    await store.start(file, "hi-IN");
+    expect(store.getState()).toMatchObject({ phase: "failed", jobId: "job-1" }); // the file did arrive
+    complete.mockResolvedValue({} as UploadDetail);
+    await store.retry();
+    expect(deps.initiate).toHaveBeenCalledTimes(1);
+    expect(deps.put).toHaveBeenCalledTimes(1);
+    expect(store.getState()).toEqual({ phase: "done", file: { name: "meeting.wav", size: 1000 }, jobId: "job-1" });
+  });
+
+  it("when the file never showed up in storage, retry does send it again", async () => {
+    const { store, deps } = setup({ complete: vi.fn().mockRejectedValue(apiError("UPLOAD_NOT_FOUND")) });
+    await store.start(file, "en-IN");
+    expect(store.getState()).not.toHaveProperty("jobId");
+    await store.retry();
+    expect(deps.initiate).toHaveBeenCalledTimes(2);
+  });
+
   it("dismiss clears the screen, but never while an upload is running", async () => {
     const { store } = setup();
     await store.start(file, "en-IN");

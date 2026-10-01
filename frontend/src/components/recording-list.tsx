@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useSyncExternalStore } from "react";
-import { useAppConfig } from "@/hooks/use-app-config";
+import { useLinkLifetime } from "@/hooks/use-app-config";
 import { useNow } from "@/hooks/use-now";
 import { useUploadState } from "@/hooks/use-upload-state";
 import { useUploads } from "@/hooks/use-uploads";
@@ -10,12 +10,21 @@ import { getClientId } from "@/lib/client-id";
 import { formatAgo, formatBytes, formatDuration } from "@/lib/format";
 import { displayStatus } from "@/lib/status";
 import type { UploadListItem } from "@/lib/types";
-import { Button, Notice, SkeletonLine, StatusMark } from "./ui";
+import { isBusy } from "@/lib/upload-store";
+import { Button, Loading, Notice, SkeletonLine, StaleNote, StatusMark } from "./ui";
 
-const DEFAULT_LINK_LIFETIME_SECONDS = 900; // only used until /api/config answers
-
-function Row({ job, now, expiry }: { job: UploadListItem; now: number | null; expiry: number }) {
-  const status = displayStatus(job, now ?? 0, expiry);
+function Row({
+  job,
+  now,
+  expiry,
+  sendingHere,
+}: {
+  job: UploadListItem;
+  now: number | null;
+  expiry: number;
+  sendingHere: boolean;
+}) {
+  const status = displayStatus(job, now ?? 0, expiry, sendingHere);
   return (
     <li>
       <Link href={`/uploads/${job.id}`} className="-mx-3 block rounded-control px-3 py-4 hover:bg-sheet">
@@ -39,7 +48,7 @@ function Row({ job, now, expiry }: { job: UploadListItem; now: number | null; ex
 
 export function RecordingList() {
   const { data: jobs, error, loading, refresh } = useUploads();
-  const config = useAppConfig();
+  const expiry = useLinkLifetime();
   const upload = useUploadState();
   const now = useNow(30_000);
   // Read from the browser (it cannot be known on the server); true until the browser says otherwise.
@@ -55,7 +64,8 @@ export function RecordingList() {
     if (uploadJob) refresh();
   }, [uploadJob, refresh]);
 
-  const expiry = config?.upload_url_expires_seconds ?? DEFAULT_LINK_LIFETIME_SECONDS;
+  // The upload this tab is sending right now is not abandoned, however long the transfer has been going.
+  const sendingId = isBusy(upload) && "jobId" in upload ? upload.jobId : null;
 
   return (
     <section aria-labelledby="recordings-heading">
@@ -71,11 +81,11 @@ export function RecordingList() {
 
       <div className="mt-4">
         {loading && (
-          <div className="space-y-5 border-y border-rule py-5" aria-label="Loading your recordings">
+          <Loading label="Loading your recordings" className="space-y-5 border-y border-rule py-5">
             <SkeletonLine className="w-2/3" />
             <SkeletonLine className="w-1/2" />
             <SkeletonLine className="w-3/5" />
-          </div>
+          </Loading>
         )}
 
         {!loading && !jobs && error && (
@@ -101,14 +111,10 @@ export function RecordingList() {
           <>
             <ul className="divide-y divide-rule border-y border-rule">
               {jobs.map((job) => (
-                <Row key={job.id} job={job} now={now} expiry={expiry} />
+                <Row key={job.id} job={job} now={now} expiry={expiry} sendingHere={job.id === sendingId} />
               ))}
             </ul>
-            {error && (
-              <p role="status" className="mt-3 text-sm text-soft">
-                Can&apos;t reach the server right now. Showing what was last loaded; this page keeps trying.
-              </p>
-            )}
+            {error && <StaleNote className="mt-3" />}
           </>
         )}
       </div>

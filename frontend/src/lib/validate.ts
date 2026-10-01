@@ -15,8 +15,10 @@ export function formatTypes(config: Pick<AppConfig, "audio_extensions">): string
 export function problemWith(file: Pick<File, "name" | "size">, config: AppConfig | null): string | null {
   if (file.size === 0) return "That file is empty.";
   if (!config) return null;
-  const dot = file.name.lastIndexOf(".");
-  const extension = dot > 0 ? file.name.slice(dot).toLowerCase() : "";
+  // The name as the backend reads it: control characters dropped and the ends trimmed (upload_rules.clean_filename).
+  const name = file.name.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot).toLowerCase() : "";
   if (!config.audio_extensions.includes(extension)) {
     return `${extension ? extension.slice(1).toUpperCase() : "That kind of"} files aren't supported. Use ${formatTypes(config)}.`;
   }

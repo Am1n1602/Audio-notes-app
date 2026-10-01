@@ -1,3 +1,4 @@
+import { noteServerTime } from "./clock";
 import { getClientId } from "./client-id";
 import type {
   AppConfig,
@@ -9,6 +10,10 @@ import type {
 
 // The API's address is public on purpose (bundled into browser code): it is only an address, never a secret.
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
+
+// A request that never answers (a half-open connection after the laptop slept) must end, or whatever waits on it
+// (polling, an upload's final check) would wait forever. Longer than the slowest answer the backend can give.
+const REQUEST_TIMEOUT_MS = 45_000;
 
 /** A failed call, in words a person can read. `code` is the backend's stable code, or NETWORK / UNEXPECTED. */
 export class ApiError extends Error {
@@ -47,10 +52,16 @@ async function request<T>(path: string, init: RequestInit = {}, withClientId = t
 
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
   } catch {
     throw new ApiError(0, "NETWORK", "Can't reach the server. Check your connection and try again.");
   }
+  noteServerTime(res.headers.get("Date"));
   if (!res.ok) throw await errorFrom(res);
   return (await res.json()) as T;
 }

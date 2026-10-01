@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { useAppConfig } from "@/hooks/use-app-config";
+import { useAppConfig, useLinkLifetime } from "@/hooks/use-app-config";
 import { useUpload } from "@/hooks/use-uploads";
 import { isWorking } from "@/lib/status";
 import { AudioPlayer } from "./audio-player";
@@ -12,9 +12,7 @@ import { StatusPanel } from "./status-panel";
 import { SummaryView } from "./summary-view";
 import { TranscriptView } from "./transcript-view";
 import { UnfinishedUpload } from "./unfinished-upload";
-import { Button, ButtonLink, Notice, SkeletonLine, StatusMark } from "./ui";
-
-const DEFAULT_LINK_LIFETIME_SECONDS = 900; // only used until /api/config answers
+import { Button, ButtonLink, Loading, Notice, SkeletonLine, StaleNote, StatusMark } from "./ui";
 
 const BackLink = () => (
   <Link href="/" className="text-sm text-soft underline decoration-rule decoration-2 underline-offset-4 hover:text-ink">
@@ -26,6 +24,7 @@ const BackLink = () => (
 export function UploadView({ id }: { id: string }) {
   const { data: job, error, loading, failures, refresh } = useUpload(id);
   const config = useAppConfig();
+  const linkLifetime = useLinkLifetime();
   const name = job?.original_filename;
 
   useEffect(() => {
@@ -34,11 +33,11 @@ export function UploadView({ id }: { id: string }) {
 
   if (loading) {
     return (
-      <div aria-label="Loading the recording" className="space-y-6">
+      <Loading label="Loading the recording" className="space-y-6">
         <SkeletonLine className="w-24" />
         <SkeletonLine className="h-9 w-3/4" />
         <SkeletonLine className="w-1/2" />
-      </div>
+      </Loading>
     );
   }
 
@@ -96,18 +95,10 @@ export function UploadView({ id }: { id: string }) {
         <MetaList job={job} languages={languages} />
       </header>
 
-      {failures >= 2 && (
-        <p role="status" className="-mt-6 text-sm text-soft">
-          Can&apos;t reach the server right now. Showing what was last loaded; this page keeps trying.
-        </p>
-      )}
+      {failures >= 2 && <StaleNote className="-mt-6" />}
 
       {job.status === "UPLOADING" && (
-        <UnfinishedUpload
-          job={job}
-          linkLifetimeSeconds={config?.upload_url_expires_seconds ?? DEFAULT_LINK_LIFETIME_SECONDS}
-          onConfirmed={refresh}
-        />
+        <UnfinishedUpload job={job} linkLifetimeSeconds={linkLifetime} onConfirmed={refresh} />
       )}
       {isWorking(job.status) && <StatusPanel job={job} />}
       {job.status === "FAILED" && <FailurePanel job={job} onRetried={refresh} />}

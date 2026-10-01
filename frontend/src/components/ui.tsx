@@ -81,3 +81,22 @@ export function Notice({
 export function SkeletonLine({ className = "" }: { className?: string }) {
   return <div aria-hidden className={`h-4 rounded-control bg-rule/70 ${className}`} />;
 }
+
+/** The skeleton's wrapper: the lines are hidden from screen readers, so this is the part that says what is loading. */
+export function Loading({ label, className = "", children }: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <div role="status" className={className}>
+      <span className="sr-only">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/** Checks are failing but an older answer is still on screen. */
+export function StaleNote({ className = "" }: { className?: string }) {
+  return (
+    <p role="status" className={`text-sm text-soft ${className}`}>
+      Can&apos;t reach the server right now. Showing what was last loaded; this page keeps trying.
+    </p>
+  );
+}

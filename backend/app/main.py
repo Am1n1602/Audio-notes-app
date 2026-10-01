@@ -19,6 +19,9 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origin_list,
         allow_methods=["*"],
         allow_headers=["*"],
+        # The page compares the API's timestamps with the server's clock, not the browser's (which can be minutes
+        # off). A cross-origin page can only read the response Date header if it is exposed here.
+        expose_headers=["Date"],
     )
     register_error_handlers(app)
     app.include_router(health.router, prefix="/api")

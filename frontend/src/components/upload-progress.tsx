@@ -15,7 +15,7 @@ type Uploading = Extract<UploadState, { phase: "uploading" }>;
  * moving, a plain statement of that with how long it has been. A bar that just sits there looks frozen; this says why.
  */
 export function UploadProgress({ upload }: { upload: Uploading }) {
-  const now = useNow(1000);
+  const now = useNow(1000, Date.now); // measured against upload.movedAt, which is this browser's clock
   const percent = upload.total > 0 ? Math.floor((upload.loaded / upload.total) * 100) : 0;
   const allSent = upload.loaded >= upload.total;
   const quietFor = now === null ? 0 : now - upload.movedAt;
