@@ -99,6 +99,41 @@ describe("when asking fails", () => {
     expect(log.errors).toEqual([[status, 1]]);
   });
 
+  it.each([401, 404])("does not ask again when the tab comes back after a %i, but refresh() still can", async (status) => {
+    let resume: () => void = () => {};
+    const { load, poller } = setup((l) => l.mockRejectedValue(new ApiError(status, "X", "no")), {
+      onResume: (callback) => {
+        resume = callback;
+        return () => {};
+      },
+    });
+    await tick(0);
+    expect(load).toHaveBeenCalledTimes(1);
+    resume(); // switching back to the tab, or the network returning
+    await tick(0);
+    expect(load).toHaveBeenCalledTimes(1);
+    poller.refresh(); // an explicit request is still honoured
+    await tick(0);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("goes back to asking normally once a refresh() finds the answer again", async () => {
+    let resume: () => void = () => {};
+    const { load, log, poller } = setup((l) => l.mockRejectedValueOnce(new ApiError(404, "X", "no")).mockResolvedValue("working"), {
+      onResume: (callback) => {
+        resume = callback;
+        return () => {};
+      },
+    });
+    await tick(0);
+    poller.refresh();
+    await tick(0);
+    expect(log.data).toEqual(["working"]);
+    resume();
+    await tick(0);
+    expect(load).toHaveBeenCalledTimes(3); // the loop is alive again, so coming back asks
+  });
+
   it("reports something that is not an ApiError as a generic failure", async () => {
     const { log } = setup((l) => l.mockRejectedValue(new TypeError("boom")));
     await tick(0);

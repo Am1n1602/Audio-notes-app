@@ -21,8 +21,8 @@ export interface PollerOptions<T> {
 
 /**
  * Asks `load` now and then again after each `delayFor` until it says stop. Waits while hidden and asks at once on resume,
- * backs off (2x, up to 30 s) after a failure, stops on an answer asking again cannot change, and never has two checks
- * running at once.
+ * backs off (2x, up to 30 s) after a failure, stops on an answer asking again cannot change (not even when the tab comes
+ * back or the network returns; only refresh() asks again), and never has two checks running at once.
  */
 export function startPolling<T>({
   load,
@@ -36,6 +36,7 @@ export function startPolling<T>({
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight = false;
   let failures = 0;
+  let final = false; // the last answer was one asking again cannot change
 
   const schedule = (ms: number) => {
     clearTimeout(timer);
@@ -52,6 +53,7 @@ export function startPolling<T>({
       const data = await load();
       if (stopped) return;
       failures = 0;
+      final = false; // a manual refresh() that finds the job again starts the loop over
       onData(data);
       const delay = delayFor(data);
       if (delay !== null) schedule(delay);
@@ -60,14 +62,15 @@ export function startPolling<T>({
       failures += 1;
       const error = caught instanceof ApiError ? caught : new ApiError(0, "UNEXPECTED", "Something went wrong.");
       onError(error, failures);
-      if (!FINAL_ERRORS.has(error.status)) schedule(backoffDelay(2500, failures));
+      final = FINAL_ERRORS.has(error.status);
+      if (!final) schedule(backoffDelay(2500, failures));
     } finally {
       inFlight = false;
     }
   }
 
   const unsubscribe = onResume(() => {
-    if (!isHidden()) void run();
+    if (!final && !isHidden()) void run();
   });
   void run();
 

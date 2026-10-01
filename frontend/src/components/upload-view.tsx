@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { useAppConfig, useLinkLifetime } from "@/hooks/use-app-config";
+import { DEFAULT_LINK_LIFETIME_SECONDS, useAppConfig } from "@/hooks/use-app-config";
 import { useUpload } from "@/hooks/use-uploads";
 import { isWorking } from "@/lib/status";
 import { AudioPlayer } from "./audio-player";
@@ -24,7 +24,7 @@ const BackLink = () => (
 export function UploadView({ id }: { id: string }) {
   const { data: job, error, loading, failures, refresh } = useUpload(id);
   const config = useAppConfig();
-  const linkLifetime = useLinkLifetime();
+  const linkLifetime = config?.upload_url_expires_seconds ?? DEFAULT_LINK_LIFETIME_SECONDS;
   const name = job?.original_filename;
 
   useEffect(() => {

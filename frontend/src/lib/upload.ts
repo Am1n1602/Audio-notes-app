@@ -45,6 +45,9 @@ export function putFile(
     xhr.onload = () =>
       xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new TransferError("rejected", xhr.status));
     xhr.onerror = () => reject(new TransferError("network"));
+    // xhr.timeout is left at 0 on purpose: an upload can legitimately run for an hour (2 GiB at 0.4 MB/s), so a total
+    // timeout would kill good uploads. A stalled one is shown to the person (upload-progress.tsx), who decides to cancel.
+    // This handler only covers a request object that sets a timeout of its own.
     xhr.ontimeout = () => reject(new TransferError("network"));
     xhr.onabort = () => reject(new TransferError("aborted"));
     signal?.addEventListener("abort", () => xhr.abort(), { once: true });
