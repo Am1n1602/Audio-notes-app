@@ -2,10 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from app.api import app_config, health, uploads
+from app.api import app_config, health, internal, uploads
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
+from app.services import steps
 
 
 def create_app() -> FastAPI:
@@ -28,9 +29,15 @@ def create_app() -> FastAPI:
     # it every few seconds while the summary is written. Text compresses to a fraction; small answers are left alone.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     register_error_handlers(app)
-    app.include_router(health.router, prefix="/api")
-    app.include_router(app_config.router, prefix="/api")
-    app.include_router(uploads.router, prefix="/api")
+    if settings.service_role == "steps":
+        # The private service Cloud Tasks calls. It registers NO /api routes, and the public service registers no
+        # /internal route: Cloud Run grants access per service, so the two cannot share one.
+        steps.assert_ready(settings)
+        app.include_router(internal.router, prefix="/internal")
+    else:
+        app.include_router(health.router, prefix="/api")
+        app.include_router(app_config.router, prefix="/api")
+        app.include_router(uploads.router, prefix="/api")
     return app
 
 

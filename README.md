@@ -32,7 +32,7 @@ The assignment explicitly requires Next.js, FastAPI, Postgres, storage, backgrou
 
 Use one concrete provider combination and document it. Do not change providers mid-project unless a real deployment limitation forces it.
 
-### Deployment (Phase 8, planned)
+### Deployment
 
 A real deployment limitation forced one change to the stack above. The design needs a worker process that runs all the time plus Redis, and none of the free tiers checked (Render, Railway, Fly.io, Cloud Run worker pools) runs one. But the worker is already a chain of short, repeatable steps that reschedule themselves through one interface (`JobQueue.enqueue_process_job(job_id, countdown)`), so in production the queue becomes **Cloud Tasks** and each step becomes one HTTP request:
 
@@ -43,7 +43,9 @@ Browser -> Cloud Run "api" (public)  --enqueue-->  Cloud Tasks  --OIDC-->  Cloud
 Neon Postgres, AWS S3 (uploads go browser -> S3 directly), Gnani, Groq
 ```
 
-Nothing runs when nobody uses the demo. Locally nothing changes: Docker Postgres and Redis, Celery, `uvicorn`. The step logic, the state machine and all tests are shared; only the queue adapter and one endpoint differ. Hosting research and the detailed plan are in the architecture notes; this section is updated when Phase 8 is built.
+Nothing runs when nobody uses the demo. Locally nothing changes: Docker Postgres and Redis, Celery, `uvicorn`. The step logic, the state machine and all tests are shared (`backend/app/services/steps.py` runs one step for both the Celery task and the endpoint); only the queue adapter (`QUEUE_BACKEND`) and one endpoint differ. How to deploy it is under "Deploy" below.
+
+Because the demo is public and has no sign-in, it limits each browser to `MAX_UPLOADS_PER_DAY` uploads per 24 hours (the deployment uses 5) and files to `MAX_UPLOAD_BYTES` (200 MB there), and caps Cloud Run instances.
 
 ## Important Gnani API fact
 
@@ -128,8 +130,10 @@ Background:
 │   ├── migrations/           # Alembic migrations (alembic.ini lives in backend/)
 │   ├── tests/
 │   └── requirements*.txt
-├── worker/                   # Celery app and tasks; imports the shared code in backend/app
+├── worker/                   # Celery app and tasks (local development); imports the shared code in backend/app
 ├── scripts/                  # live checks against real services: provider smoke tests, pipeline_check, fault_proxy + fault_check
+├── deploy/gcp.sh             # Google Cloud setup, build and deploy, one stage per command (see "Deploy")
+├── Dockerfile                # one image for the API, the step service and the migration job
 ├── prompts/
 │   └── summary-prompt.md
 ├── docker-compose.yml        # local Postgres + Redis only
@@ -179,7 +183,7 @@ python scripts/fault_check.py --speech recording.wav
 
 ## How processing works
 
-`/complete` verifies the file in S3 and puts one task on the Redis queue. The worker then processes the job as a
+`/complete` verifies the file in S3 and puts one task on the queue (Redis locally, Cloud Tasks when deployed). The worker (or, deployed, the step service) then processes the job as a
 chain of short steps (claim, create the Gnani job, start it, poll, download the transcript, save it), each step
 re-reading the job from Postgres and scheduling the next. Nothing runs inside a web request, and a worker restart
 loses nothing because all state is in Postgres.
@@ -215,6 +219,44 @@ summary without transcribing again. The worker needs `GNANI_API_KEY` and `LLM_AP
       "AllowedHeaders": ["*"], "ExposeHeaders": ["ETag"], "MaxAgeSeconds": 3000 }]
    ```
 
+## Deploy
+
+The public deployment is two Cloud Run services built from one image (`Dockerfile`), a Cloud Tasks queue, Neon Postgres
+and the S3 bucket above, with the frontend on Vercel. `deploy/gcp.sh` holds every command, one stage each.
+
+You need: `gcloud` logged in; a Google Cloud project with billing (`gcloud projects create <id>`, then `gcloud billing
+projects link <id> --billing-account=<account>`); a Neon project (use the **direct** connection string, not the pooled
+one) saved in `.env` as `NEON_DATABASE_URL`; and the storage, Gnani and Groq values already in `.env`. Secret values go
+from `.env` straight into Secret Manager and are never printed.
+
+```bash
+export PROJECT=<id> REGION=asia-south1
+deploy/gcp.sh setup         # APIs, two service accounts, image registry, the job-steps queue, secrets
+deploy/gcp.sh build         # build the image with Cloud Build
+deploy/gcp.sh steps         # private service: only Cloud Tasks (as steps-sa) may call it
+deploy/gcp.sh migrate       # alembic upgrade head, as a Cloud Run job
+deploy/gcp.sh api           # public service; prints its URL
+```
+
+Then the frontend: import the repository into Vercel with **Root Directory `frontend`** and one environment variable,
+`NEXT_PUBLIC_API_BASE_URL=<the api URL>`. Tell the API which origin may call it, and allow the same origin to upload to
+the bucket (CORS rule above):
+
+```bash
+CORS_ORIGINS=https://<your-project>.vercel.app deploy/gcp.sh api
+```
+
+Check it end to end against the public URL (this uploads a real file and spends a little Gnani and Groq quota):
+
+```bash
+python scripts/pipeline_check.py https://<api url> recording.wav
+```
+
+Design choices worth knowing: the step service runs at most one instance, so every step shares one process-wide pace
+for Gnani's call limit; the queue runs at most two steps at once and retries a failed delivery up to 10 times with 5 to
+120 seconds between tries; the API holds only the database and storage secrets, never the Gnani or Groq keys; Neon's
+database sleeps after 5 idle minutes, so the first request after a pause takes a few seconds longer.
+
 ## API
 
 | Endpoint | Purpose |
@@ -225,7 +267,8 @@ summary without transcribing again. The worker needs `GNANI_API_KEY` and `LLM_AP
 | `GET /api/uploads`, `GET /api/uploads/{id}` | this browser's history and a job's detail (status, stage message, transcript, summary, error, `can_retry`) |
 | `GET /api/uploads/{id}/audio` | a short-lived signed link to play the stored recording (never cached) |
 | `GET /api/config` | public and read-only: the file types, size limit and languages the backend accepts, so the page never copies them |
-| `GET /api/health` | Postgres and Redis status |
+| `GET /api/health` | Postgres status, and Redis when the queue is Redis |
+| `POST /internal/steps` | **private service only**: runs one step of a job; called by Cloud Tasks with a service-account token, not part of the public API |
 
 **Per-browser history.** There are no accounts. The browser generates a random client id (a UUID v4), keeps it in `localStorage` and sends it in the `X-Client-Id` header on every `/api/uploads` call. Jobs are shown only to the browser that created them: another browser (or a caller who merely knows a job id) gets `404 JOB_NOT_FOUND`, identical to a job that does not exist, and a missing or malformed header gets `401 CLIENT_ID_REQUIRED` / `CLIENT_ID_INVALID`. This keeps visitors' uploads private from each other on a public demo; it is not authentication (clearing site data loses the history, another browser starts empty).
 

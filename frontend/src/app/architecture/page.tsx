@@ -153,16 +153,36 @@ export default function ArchitecturePage() {
 
       <Section id="deployment" title="Where it runs">
         <p>
-          The web app, the API and the worker are separate processes that share only Postgres, the queue and storage.
-          In development they run locally with Postgres and Redis in Docker. The public deployment moves the API and the
-          step runner to Google Cloud Run, the queue to Cloud Tasks and the database to Neon, so that nothing runs, or
-          costs anything, while nobody is using it. This section is updated when that deployment ships.
+          The web app, the API and the step runner are separate processes that share only Postgres, the queue and
+          storage. This deployment runs them as follows.
+        </p>
+        <ul className="list-disc space-y-3 pl-5">
+          <li>The web app is a Next.js site on Vercel.</li>
+          <li>
+            The API (<code>api</code>, public) and the step runner (<code>steps</code>, private) are two Google Cloud
+            Run services built from one image, in Mumbai. Only the queue can call <code>steps</code>.
+          </li>
+          <li>
+            The queue is a Google Cloud Tasks queue, <code>job-steps</code>. It calls <code>steps</code> when each step
+            is due and tries again if a step does not answer, so there is no always-on worker: nothing runs, or costs
+            anything, while nobody is using it.
+          </li>
+          <li>The database is Neon Postgres in Singapore, the closest region it offers to Mumbai.</li>
+          <li>Recordings are in a private AWS S3 bucket in Mumbai. Your browser uploads to it directly.</li>
+        </ul>
+        <p>
+          In development the same code runs locally with Postgres and Redis in Docker, and a Celery worker takes the
+          place of Cloud Tasks.
         </p>
       </Section>
 
       <Section id="limits" title="Limits">
         <ul className="list-disc space-y-3 pl-5">
           <li>Recordings longer than four hours are not supported. They would need to be split into pieces first.</li>
+          <li>
+            This public demo accepts files up to 200 MB and five uploads per browser in 24 hours, so that it cannot be
+            run up by one visitor.
+          </li>
           <li>
             Summaries are written by a model from the transcript. They are instructed not to add anything, but they can
             still be wrong, which is why the transcript is always shown next to them.

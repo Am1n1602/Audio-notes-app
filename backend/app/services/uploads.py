@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,15 @@ def initiate_upload(
 ) -> tuple[AudioJob, str, str]:
     """Returns (job, signed upload URL, the Content-Type the browser must send)."""
     upload = validate_upload(filename, size_bytes, language_code, settings.max_upload_bytes)
+    limit = settings.max_uploads_per_day
+    if limit and jobs.count_started_since(db, owner_id, timedelta(hours=24)) >= limit:
+        # The demo is public and has no sign-in, so this is what stops one browser spending the provider quotas.
+        log_event(logger, "upload_limit_reached", limit=limit)
+        raise AppError(
+            429,
+            "DAILY_LIMIT_REACHED",
+            f"This demo allows {limit} uploads per browser in 24 hours and you have used them. Please try again later.",
+        )
     job_id = uuid.uuid4()
     key = object_key(job_id, upload.extension)
     # Sign before inserting: signing is pure computation, so nothing external is touched if the insert then fails.

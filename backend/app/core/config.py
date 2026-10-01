@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/app/core/config.py -> repo root
@@ -13,7 +14,22 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=REPO_ROOT / ".env", extra="ignore")
 
     database_url: str
-    redis_url: str
+    db_connect_timeout_seconds: int = Field(default=3, ge=1)  # a Neon database asleep after 5 idle minutes needs ~10
+
+    # How a job's next step is delivered. "celery": Redis + a Celery worker (local development). "cloudtasks": Google
+    # Cloud Tasks calls the private step endpoint (production, nothing always-on). Everything else is the same code.
+    queue_backend: Literal["celery", "cloudtasks"] = "celery"
+    redis_url: str = ""  # celery only
+    # What this process serves: "api" is the public /api/*; "steps" is the private POST /internal/steps that Cloud
+    # Tasks calls. Two deployments of one image, because Cloud Run grants access per service, not per path.
+    service_role: Literal["api", "steps"] = "api"
+    cloud_tasks_queue: str = ""  # projects/<project>/locations/<region>/queues/<queue>
+    steps_url: str = ""  # the steps service's own URL, with no path: Cloud Tasks posts to <it>/internal/steps
+    steps_invoker_email: str = ""  # the service account Cloud Tasks signs its call as (it holds run.invoker on steps)
+    steps_dispatch_deadline_seconds: int = (
+        300  # Cloud Tasks waits this long for a step to answer (a step takes <=215 s)
+    )
+    max_uploads_per_day: int = Field(default=0, ge=0)  # per browser, over the last 24 hours; 0 means no limit
 
     # Object storage (private S3 bucket). Required: the API cannot do anything useful without it.
     storage_region: str
@@ -75,6 +91,21 @@ class Settings(BaseSettings):
             if url.startswith(prefix):
                 return "postgresql+psycopg://" + url[len(prefix) :]
         return url
+
+    @model_validator(mode="after")
+    def queue_backend_is_configured(self) -> Self:
+        wanted = (
+            {"REDIS_URL": self.redis_url}
+            if self.queue_backend == "celery"
+            else {
+                "CLOUD_TASKS_QUEUE": self.cloud_tasks_queue,
+                "STEPS_URL": self.steps_url,
+                "STEPS_INVOKER_EMAIL": self.steps_invoker_email,
+            }
+        )
+        if missing := [name for name, value in wanted.items() if not value.strip()]:
+            raise ValueError(f"QUEUE_BACKEND={self.queue_backend} needs {', '.join(missing)}")
+        return self
 
     def missing_worker_secrets(self) -> list[str]:
         """Env var names the worker cannot run without (unset or blank). The API never needs them."""

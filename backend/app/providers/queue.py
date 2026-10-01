@@ -13,7 +13,7 @@ PROCESS_JOB_TASK = "worker.process_job"
 
 
 class QueueError(Exception):
-    """The job could not be handed to the queue (Redis down or unreachable)."""
+    """The job could not be handed to the queue (Redis or Cloud Tasks down or unreachable)."""
 
 
 class JobQueue(Protocol):
@@ -55,4 +55,9 @@ class CeleryJobQueue:
 @lru_cache
 def get_queue() -> JobQueue:
     """FastAPI dependency; tests override it with a fake that records calls."""
-    return CeleryJobQueue(make_celery_app(get_settings()))
+    settings = get_settings()
+    if settings.queue_backend == "cloudtasks":
+        from app.providers.cloud_tasks import CloudTasksJobQueue  # not imported locally: it pulls in Google's SDK
+
+        return CloudTasksJobQueue(settings)
+    return CeleryJobQueue(make_celery_app(settings))

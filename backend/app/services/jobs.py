@@ -92,6 +92,13 @@ def list_jobs(db: Session, limit: int, owner_id: str) -> list[AudioJob]:
     return list(db.scalars(statement))
 
 
+def count_started_since(db: Session, owner_id: str, within: timedelta) -> int:
+    """How many uploads this browser has started in the last `within` (the database's clock, like every other time
+    comparison here). Counts every row, finished or not: an upload that never completes still left a file in storage."""
+    statement = select(func.count()).where(AudioJob.owner_id == owner_id, AudioJob.created_at > func.now() - within)
+    return db.scalar(statement) or 0
+
+
 def transition(db: Session, job_id: uuid.UUID, from_status: JobStatus, to_status: JobStatus, **fields: Any) -> bool:
     """Move a job from one status to the next, atomically. True if THIS call made the move.
 

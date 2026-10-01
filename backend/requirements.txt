@@ -6,5 +6,6 @@ alembic==1.20.0
 pydantic-settings==2.15.0
 celery[redis]==5.6.3
 redis==6.4.0
+google-cloud-tasks==2.25.0  # production queue (QUEUE_BACKEND=cloudtasks); replaces Redis + Celery there
 boto3==1.43.105
 httpx==0.28.1  # the Gnani and Groq clients (also the test client)

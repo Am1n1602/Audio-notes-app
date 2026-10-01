@@ -19,7 +19,7 @@ from app.core.config import Settings, get_settings
 from app.db.models import AudioJob, JobStatus
 from app.providers.llm import LlmTransientError, LlmTruncatedError
 from app.providers.queue import QueueError, make_celery_app
-from app.services import jobs, pipeline, recovery, summarization
+from app.services import jobs, pipeline, recovery, steps, summarization
 from app.services.summary_prompt import get_prompts
 from worker import tasks
 
@@ -111,10 +111,10 @@ def test_the_step_that_is_on_time_runs(db: Session) -> None:
 def worker(monkeypatch: pytest.MonkeyPatch, db: Session) -> tuple[FakeQueue, FakeLlm]:
     queue, llm = FakeQueue(), FakeLlm()
     monkeypatch.setattr(tasks, "queue", queue)
-    monkeypatch.setattr(tasks, "get_llm", lambda: llm)
-    monkeypatch.setattr(tasks, "get_gnani", FakeGnani)
-    monkeypatch.setattr(tasks, "get_storage", FakeStorage)
-    monkeypatch.setattr(tasks, "get_settings", lambda: SMALL)
+    monkeypatch.setattr(steps, "get_llm", lambda: llm)  # the step runner both entry points share looks these up
+    monkeypatch.setattr(steps, "get_gnani", FakeGnani)
+    monkeypatch.setattr(steps, "get_storage", FakeStorage)
+    monkeypatch.setattr(steps, "get_settings", lambda: SMALL)
     return queue, llm
 
 

@@ -10,8 +10,14 @@ from app.core.config import get_settings
 @lru_cache
 def get_engine() -> Engine:
     # pool_pre_ping replaces connections a managed Postgres closed while we were idle;
-    # connect_timeout keeps /api/health from hanging when the database is down.
-    return create_engine(get_settings().database_url, pool_pre_ping=True, connect_args={"connect_timeout": 3})
+    # connect_timeout keeps /api/health from hanging when the database is down (raised for a serverless database that
+    # sleeps when idle: the first connection after a pause waits for it to start).
+    settings = get_settings()
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": settings.db_connect_timeout_seconds},
+    )
 
 
 @lru_cache
