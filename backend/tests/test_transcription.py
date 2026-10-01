@@ -44,11 +44,12 @@ def queued_job(db: Session, *, status: JobStatus = JobStatus.QUEUED) -> uuid.UUI
 class Harness:
     def __init__(self, db: Session, gnani: FakeGnani, settings: Settings = SETTINGS) -> None:
         self.db, self.gnani, self.settings, self.sleeps = db, gnani, settings, []  # type: ignore[var-annotated]
+        self.storage = FakeStorage()
 
     def step(self, job_id: uuid.UUID) -> int | None:
         self.db.expire_all()  # a real Celery step always starts in a fresh session; do not serve a cached row
         return transcription.process_job(
-            self.db, self.gnani, FakeStorage(), self.settings, job_id, sleep=self.sleeps.append
+            self.db, self.gnani, self.storage, self.settings, job_id, sleep=self.sleeps.append
         )
 
     def job(self, job_id: uuid.UUID) -> AudioJob:
@@ -272,6 +273,40 @@ def test_a_rate_limited_poll_is_retried_in_seconds_not_half_a_minute(h: Harness,
     assert h.step(job_id) == transcription.SUMMARIZE_NOW and h.job(job_id).status is JobStatus.SUMMARIZING
 
 
+def test_while_gnani_does_not_answer_the_page_says_so_and_goes_back_when_it_does(h: Harness, gnani: FakeGnani) -> None:
+    job_id = transcribing(h)
+    assert h.job(job_id).progress_message == "Transcribing audio…"
+    gnani.job_script = [unsafe_transient(), unsafe_transient(), IN_PROGRESS]
+    h.step(job_id)
+    assert h.job(job_id).progress_message == jobs.WAITING_FOR_GNANI_MESSAGE  # not "Transcribing audio…" for two hours
+    h.step(job_id)
+    assert h.job(job_id).progress_message == jobs.WAITING_FOR_GNANI_MESSAGE
+    h.step(job_id)  # Gnani answers again
+    assert h.job(job_id).progress_message == "Transcribing audio…"
+
+
+def test_a_rate_limited_poll_does_not_change_what_the_page_says(h: Harness, gnani: FakeGnani) -> None:
+    job_id = transcribing(h)
+    gnani.job_script = [GnaniTransientError("GET /jobs -> HTTP 429", status_code=429, not_processed=True), IN_PROGRESS]
+    h.step(job_id)
+    assert h.job(job_id).progress_message == "Transcribing audio…"  # a 429 clears in seconds: nothing to report
+
+
+def test_a_job_given_up_on_does_not_keep_the_waiting_message(h: Harness, gnani: FakeGnani) -> None:
+    h.settings = SETTINGS.model_copy(update={"gnani_max_transcribe_seconds": 60})
+    job_id = transcribing(h)
+    gnani.job_script = [unsafe_transient()]
+    h.step(job_id)
+    make_old(h, 120)
+    h.step(job_id)
+    job = h.job(job_id)
+    assert (job.status, job.error_code, job.progress_message) == (
+        JobStatus.FAILED,
+        failures.TRANSCRIPTION_UNAVAILABLE,
+        None,
+    )
+
+
 def make_old(h: Harness, seconds: int) -> None:
     h.db.execute(text(f"UPDATE audio_jobs SET submit_started_at = now() - interval '{seconds} seconds'"))
     h.db.commit()
@@ -351,6 +386,12 @@ def file_failed(message: str | None, status: str = "FAILED") -> list[BatchFile]:
             [],
             failures.SOURCE_UNREACHABLE,
         ),
+        # a recording deleted from the bucket, as Gnani reported it in a live run (Phase 7)
+        (
+            BatchJob("START_FAILED", None, 0, 0, 0),
+            file_failed("FILE_NOT_FOUND", "SKIPPED"),
+            failures.SOURCE_UNREACHABLE,
+        ),
         (COMPLETED, file_failed("Empty transcript after 3 retries"), failures.EMPTY_TRANSCRIPT),
         # the exact wording Gnani used in live runs (see the comment in failure_from_terminal):
         (
@@ -368,6 +409,12 @@ def file_failed(message: str | None, status: str = "FAILED") -> list[BatchFile]:
             file_failed("Empty transcript after 3 retries"),
             failures.EMPTY_TRANSCRIPT,
         ),
+        # a recording past Gnani's 4 hour limit, as Gnani worded it for a real 4 h 05 min upload (Phase 6)
+        (
+            BatchJob("FAILED", None, 1, 0, 1),
+            file_failed("audio is 14700.2s, above the 14400s limit"),
+            failures.RECORDING_TOO_LONG,
+        ),
         (BatchJob("CANCELLED", "cancelled", 1, 0, 0), file_failed(None, "CANCELLED"), failures.TRANSCRIPTION_CANCELLED),
         (BatchJob("FAILED", None, 1, 0, 1), file_failed("boom"), failures.TRANSCRIPTION_FAILED),
         (BatchJob("FAILED", None, 1, 0, 1), [], failures.TRANSCRIPTION_FAILED),
@@ -377,12 +424,44 @@ def test_a_finished_job_without_a_transcript_is_explained_from_the_file_records(
     h: Harness, gnani: FakeGnani, batch: BatchJob, files: list[BatchFile], code: str
 ) -> None:
     job_id = transcribing(h)
+    h.storage.put(h.job(job_id).object_key, 100)  # the recording is in storage (a vanished one has its own test)
     gnani.job_script, gnani.files_script = [batch], [files]
     assert h.step(job_id) is None
     job = h.job(job_id)
     assert (job.status, job.error_code) == (JobStatus.FAILED, code)
     assert job.error_message and job.transcript is None
     assert "download" not in gnani.calls  # nothing to download
+
+
+DOWNLOAD_REFUSED = [BatchFile("f1", "FAILED", None, "public download: HTTP 404")]
+FAILED_JOB = BatchJob("FAILED", None, 1, 0, 1)
+
+
+def test_a_recording_that_vanished_from_storage_is_not_offered_a_retry(h: Harness, gnani: FakeGnani) -> None:
+    job_id = transcribing(h)  # the job's file is NOT in the (empty) storage
+    gnani.job_script, gnani.files_script = [FAILED_JOB], [DOWNLOAD_REFUSED]
+    assert h.step(job_id) is None
+    job = h.job(job_id)
+    assert (job.status, job.error_code) == (JobStatus.FAILED, failures.RECORDING_MISSING)
+    assert "upload it again" in (job.error_message or "").lower()
+
+
+def test_a_download_failure_with_the_recording_still_in_storage_stays_retryable(h: Harness, gnani: FakeGnani) -> None:
+    job_id = transcribing(h)
+    h.storage.put(h.job(job_id).object_key, 100)  # it is there: Gnani's download failed for another reason
+    gnani.job_script, gnani.files_script = [FAILED_JOB], [DOWNLOAD_REFUSED]
+    h.step(job_id)
+    assert h.job(job_id).error_code == failures.SOURCE_UNREACHABLE
+
+
+def test_when_storage_cannot_say_whether_the_recording_exists_the_failure_stays_retryable(
+    h: Harness, gnani: FakeGnani
+) -> None:
+    job_id = transcribing(h)
+    h.storage.outage = True
+    gnani.job_script, gnani.files_script = [FAILED_JOB], [DOWNLOAD_REFUSED]
+    h.step(job_id)
+    assert h.job(job_id).error_code == failures.SOURCE_UNREACHABLE
 
 
 def test_a_blank_transcript_is_reported_as_no_speech(h: Harness, gnani: FakeGnani) -> None:

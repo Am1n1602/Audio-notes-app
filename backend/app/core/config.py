@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 2 * 1024**3
     upload_url_expires_seconds: int = 900  # S3 checks expiry when the request starts, not when it ends
     audio_url_expires_seconds: int = 3600  # the signed link the player uses; the page asks for a new one when it lapses
+    # A job none of whose steps has run for this long is revived when its owner's page next asks (services/recovery.py).
+    # Every step touches the job, and the longest honest silence is one summary step's retries (about 3.5 minutes).
+    job_stalled_after_seconds: int = 600
 
     # Gnani Batch STT (used by the worker; the API never calls Gnani). Optional here so the API process can run
     # without provider secrets it never uses; the worker refuses to start without them (missing_worker_secrets).

@@ -2,7 +2,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from helpers import OWNER_A
+from helpers import OWNER_A, job_in_status
 from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 
@@ -221,3 +221,22 @@ def test_requeue_failed_clears_the_old_attempt_so_the_next_one_starts_clean(db: 
     assert job.status is JobStatus.QUEUED and job.progress_message == "Uploaded. Waiting for transcription…"
     assert (job.error_code, job.error_message) == (None, None)
     assert (job.gnani_job_id, job.gnani_status, job.submit_started_at, job.transcript) == (None, None, None, None)
+
+
+def test_a_progress_message_changes_only_while_the_job_is_in_that_status_and_only_when_different(db: Session) -> None:
+    job_id = job_in_status(db, JobStatus.TRANSCRIBING)
+    before = jobs.get_job(db, job_id).updated_at
+
+    jobs.set_progress_message(db, job_id, JobStatus.SUMMARIZING, "not this job's stage")  # wrong status: ignored
+    db.expire_all()
+    assert jobs.get_job(db, job_id).progress_message == "Transcribing audio…"
+    assert jobs.get_job(db, job_id).updated_at == before
+
+    jobs.set_progress_message(db, job_id, JobStatus.TRANSCRIBING, "Waiting…")
+    db.expire_all()
+    changed = jobs.get_job(db, job_id)
+    assert changed.progress_message == "Waiting…" and changed.updated_at > before
+
+    jobs.set_progress_message(db, job_id, JobStatus.TRANSCRIBING, "Waiting…")  # same words: nothing is touched
+    db.expire_all()
+    assert jobs.get_job(db, job_id).updated_at == changed.updated_at

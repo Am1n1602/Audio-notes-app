@@ -13,7 +13,8 @@ Error types (what the caller may safely do next):
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Protocol
@@ -144,7 +145,7 @@ class GnaniClient:
         )
         self._min_interval = min_call_interval_seconds
         self._clock, self._sleep = clock, sleep
-        self._last_call: float | None = None
+        self._last_done: float | None = None  # when the previous Gnani API call ended
         self._pace_lock = threading.Lock()
 
     @classmethod
@@ -155,29 +156,36 @@ class GnaniClient:
             min_call_interval_seconds=settings.gnani_min_call_interval_seconds,
         )
 
-    def _pace(self) -> None:
-        """Space Gnani API calls at least `min_call_interval_seconds` apart. Measured live: calls 1 s apart all
-        succeeded, calls 0.5 s apart were refused (429) half the time, back-to-back calls mostly. The old habit of
-        firing "get job" and "get files" 0.1 s apart therefore hit the limit almost every time."""
+    @contextmanager
+    def _paced(self) -> Iterator[None]:
+        """One Gnani API call at a time, each starting at least `min_call_interval_seconds` after the previous one
+        ENDED. Measured live: calls 1 s apart all succeeded, calls 0.5 s apart were refused (429) half the time. Gnani
+        counts a request when it ARRIVES, which a client cannot see; counting from the previous call's start still let
+        two calls arrive under a second apart when the first was slow ("get job" then "get files" 0.8 s apart got a 429
+        in a real 11 minute job). Counting from its end cannot."""
         if self._min_interval <= 0:
+            yield
             return
         with self._pace_lock:
-            if self._last_call is not None:
-                wait = self._min_interval - (self._clock() - self._last_call)
+            if self._last_done is not None:
+                wait = self._min_interval - (self._clock() - self._last_done)
                 if wait > 0:
                     self._sleep(wait)
-            self._last_call = self._clock()
+            try:
+                yield
+            finally:
+                self._last_done = self._clock()
 
     def _call(self, method: str, url: str, *, authenticated: bool = True, **kwargs: Any) -> httpx.Response:
         """One HTTP call. Error text never contains an external URL or exception text: both can embed a signed URL."""
         internal = url.startswith("/")
-        if internal:
-            self._pace()  # only Gnani's API is rate limited; the transcript link is S3
         where = f"{method} {url}" if internal else f"{method} <external url>"
         # The API key goes ONLY to Gnani. transcript_url is a presigned S3 link: sending the key there would leak it.
         headers = {"X-API-Key-ID": self._api_key} if authenticated else {}
         try:
-            resp = self._http.request(method, url, headers=headers, **kwargs)
+            # only Gnani's API is rate limited; the transcript link is S3
+            with self._paced() if internal else nullcontext():
+                resp = self._http.request(method, url, headers=headers, **kwargs)
         except httpx.TransportError as exc:
             raise GnaniTransientError(
                 f"{where}: {type(exc).__name__}", not_processed=isinstance(exc, _NOT_SENT)

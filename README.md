@@ -129,7 +129,7 @@ Background:
 │   ├── tests/
 │   └── requirements*.txt
 ├── worker/                   # Celery app and tasks; imports the shared code in backend/app
-├── scripts/                  # Phase 0 provider smoke tests (Gnani, S3 presign)
+├── scripts/                  # live checks against real services: provider smoke tests, pipeline_check, fault_proxy + fault_check
 ├── prompts/
 │   └── summary-prompt.md
 ├── docker-compose.yml        # local Postgres + Redis only
@@ -168,6 +168,14 @@ and every connection then waits out its whole connect timeout before falling bac
 
 The test suite needs the Postgres container running (`docker compose up -d --wait`); it creates and migrates its
 own `audio_notes_test` database. Storage, the queue and Gnani are all faked in tests.
+
+Live checks against the real services (API, worker, S3, Gnani and Groq keys all running):
+
+```bash
+python scripts/pipeline_check.py http://127.0.0.1:8000 recording.wav --timeout 10     # one recording, end to end
+# failure scenarios: the worker talks to Gnani and Groq through scripts/fault_proxy.py (see its docstring for the setup)
+python scripts/fault_check.py --speech recording.wav
+```
 
 ## How processing works
 

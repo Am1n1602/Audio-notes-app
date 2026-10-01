@@ -88,6 +88,38 @@ def test_calls_that_are_already_far_enough_apart_do_not_wait() -> None:
     assert fake.slept == []
 
 
+def test_the_wait_counts_from_when_the_previous_call_ended_not_when_it_started() -> None:
+    """Gnani counts a request when it arrives. Counting from the previous call's START let a slow first call be followed
+    by a second that arrived under a second later (a real 'get job' then 'get files' were 0.8 s apart: a 429)."""
+    fake = FakeTime()
+
+    def slow(_request: httpx.Request) -> httpx.Response:
+        fake.now += 0.9  # the call itself takes 0.9 s
+        return httpx.Response(200, json={"status": "IN_PROGRESS"})
+
+    http = httpx.Client(transport=httpx.MockTransport(slow), base_url="https://gnani.test")
+    client = GnaniClient(
+        KEY, "https://gnani.test", http, min_call_interval_seconds=1.2, clock=fake.clock, sleep=fake.sleep
+    )
+    client.get_batch_job(JOB)
+    client.get_batch_job(JOB)  # wanted right after the first one ended
+    assert fake.slept == [1.2]  # a full interval after it ended (from its start it would have been only 0.3 s)
+
+
+def test_a_call_that_fails_still_counts_for_pacing() -> None:
+    fake = FakeTime()
+    http = httpx.Client(
+        transport=httpx.MockTransport(raising(httpx.ReadTimeout("slow"))), base_url="https://gnani.test"
+    )
+    client = GnaniClient(
+        KEY, "https://gnani.test", http, min_call_interval_seconds=1.2, clock=fake.clock, sleep=fake.sleep
+    )
+    for _ in range(2):
+        with pytest.raises(GnaniTransientError):
+            client.get_batch_job(JOB)
+    assert fake.slept == [1.2]
+
+
 def test_the_transcript_download_is_not_paced_because_it_is_s3_not_gnani() -> None:
     fake = FakeTime()
     http = httpx.Client(

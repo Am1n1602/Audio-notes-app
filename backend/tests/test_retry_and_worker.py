@@ -78,6 +78,8 @@ def test_every_retryable_failure_can_be_retried(api: TestClient, db: Session, qu
         failures.UPLOAD_SIZE_MISMATCH,
         failures.EMPTY_TRANSCRIPT,
         failures.INVALID_AUDIO,  # pressing Retry on a non-audio file can never help
+        failures.RECORDING_TOO_LONG,  # nor on a file that is over the length limit
+        failures.RECORDING_MISSING,  # nor on one that is gone from storage
         failures.TRANSCRIPTION_AUTH_FAILED,
         failures.TRANSCRIPTION_REQUEST_REJECTED,
     ],

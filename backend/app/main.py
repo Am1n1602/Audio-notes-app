@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api import app_config, health, uploads
 from app.core.config import get_settings
@@ -23,6 +24,9 @@ def create_app() -> FastAPI:
         # off). A cross-origin page can only read the response Date header if it is exposed here.
         expose_headers=["Date"],
     )
+    # A long recording's transcript makes the job answer 40 KB (a 4 hour one about 250 KB), and an open page asks for
+    # it every few seconds while the summary is written. Text compresses to a fraction; small answers are left alone.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     register_error_handlers(app)
     app.include_router(health.router, prefix="/api")
     app.include_router(app_config.router, prefix="/api")

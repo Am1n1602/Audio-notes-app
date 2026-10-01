@@ -40,6 +40,9 @@ PROGRESS_MESSAGES: dict[JobStatus, str] = {
     JobStatus.TRANSCRIBING: "Transcribing audio…",
     JobStatus.SUMMARIZING: "Generating summary…",
 }
+# While Gnani does not answer, the job is not "being transcribed" as far as anyone can tell, and every retry touches the
+# job (so "last activity" stays fresh): without this the page would say "Transcribing audio…" for up to two hours.
+WAITING_FOR_GNANI_MESSAGE = "Waiting for the transcription service to respond…"
 
 
 def create_job(
@@ -114,6 +117,18 @@ def transition(db: Session, job_id: uuid.UUID, from_status: JobStatus, to_status
     moved = db.execute(statement).first() is not None
     db.commit()
     return moved
+
+
+def set_progress_message(db: Session, job_id: uuid.UUID, status: JobStatus, message: str) -> None:
+    """Change what the page says is happening, but only while the job is still in `status`, and only if it differs (so a
+    repeated call touches nothing and "last activity" keeps meaning real activity)."""
+    db.execute(
+        update(AudioJob)
+        .where(AudioJob.id == job_id, AudioJob.status == status, AudioJob.progress_message.is_distinct_from(message))
+        .values(progress_message=message)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
 
 
 def set_gnani_job_id(db: Session, job_id: uuid.UUID, gnani_job_id: str) -> bool:
@@ -230,6 +245,28 @@ def set_next_step(db: Session, job_id: uuid.UUID, seconds: int) -> None:
         .execution_options(synchronize_session=False)
     )
     db.commit()
+
+
+def claim_stalled(db: Session, job_ids: list[uuid.UUID], after_seconds: int) -> list[uuid.UUID]:
+    """Of these jobs, the ones that really have had no step for `after_seconds` (judged by the database clock) and are
+    still in progress, claimed in the same statement: it also clears the due time and bumps updated_at, so a second
+    caller, or the same page asking again a moment later, finds nothing stalled and revives nothing twice."""
+    if not job_ids:
+        return []
+    statement = (
+        update(AudioJob)
+        .where(
+            AudioJob.id.in_(job_ids),
+            AudioJob.status.in_(ACTIVE_STATUSES),
+            AudioJob.updated_at < func.now() - timedelta(seconds=after_seconds),
+        )
+        .values(next_step_at=None)
+        .returning(AudioJob.id)
+        .execution_options(synchronize_session=False)
+    )
+    claimed = list(db.scalars(statement))
+    db.commit()
+    return claimed
 
 
 def clear_next_step(db: Session, job_id: uuid.UUID) -> None:

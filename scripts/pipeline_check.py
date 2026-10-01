@@ -4,50 +4,73 @@ Needs the API, the Celery worker, Postgres, Redis, real S3, a real Gnani key and
 
     python scripts/pipeline_check.py http://127.0.0.1:8000 recording.wav
     python scripts/pipeline_check.py http://127.0.0.1:8000 silence.wav --expect-error EMPTY_TRANSCRIPT
+    python scripts/pipeline_check.py http://127.0.0.1:8000 two-hours.mp3 --timeout 180
 
 Prints a timeline of every status / stage message the job goes through, then checks the outcome.
 Without --expect-error the job must reach COMPLETED with a transcript and a summary.
+
+--timeout MINUTES   how long to wait for the job to settle (default 5; a long recording needs far more)
+--client-id UUID    act as that browser, so the job also shows up in that browser's history (default: a fresh id)
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 POLL_EVERY_SECONDS = 3
-GIVE_UP_AFTER_SECONDS = 300
 SETTLED = {"COMPLETED", "FAILED"}
 
 
-def main(base_url: str, audio: Path, expect_error: str | None) -> int:
-    data = audio.read_bytes()
-    # Each browser has its own random client id; a job is only visible to the id that created it.
-    api = httpx.Client(base_url=base_url, timeout=60, headers={"X-Client-Id": str(uuid.uuid4())})
+def blocks(path: Path, size: int = 1024 * 1024) -> Iterator[bytes]:
+    """The file in 1 MB pieces, so a multi-gigabyte recording is never held in memory."""
+    with path.open("rb") as handle:
+        while block := handle.read(size):
+            yield block
 
-    init = api.post("/api/uploads/initiate", json={"filename": audio.name, "size_bytes": len(data)})
+
+def upload(api: httpx.Client, audio: Path, *, quiet: bool = True) -> tuple[str, dict[str, Any], float]:
+    """initiate -> PUT to storage -> /complete, like the page does. Returns the job id, /complete's answer and the
+    seconds the transfer took."""
+    size = audio.stat().st_size
+    init = api.post("/api/uploads/initiate", json={"filename": audio.name, "size_bytes": size})
     assert init.status_code == 201, init.text
     job_id, target = init.json()["id"], init.json()["upload"]
-    put = httpx.put(target["url"], content=data, headers=target["headers"], timeout=300)
+    sent = time.monotonic()
+    # The size is signed into the link, so it must be sent as a Content-Length (not chunked) even though it streams.
+    headers = {**target["headers"], "Content-Length": str(size)}
+    put = httpx.put(target["url"], content=blocks(audio), headers=headers, timeout=httpx.Timeout(60, read=300))
     assert put.status_code == 200, f"upload to S3 failed: HTTP {put.status_code}"
+    seconds = time.monotonic() - sent
     # Like the real UI: /complete answers 409 UPLOAD_NOT_FOUND or 503 STORAGE_UNAVAILABLE when it is safe to try again.
     for attempt in range(1, 4):
         done = api.post(f"/api/uploads/{job_id}/complete")
         code = done.json().get("error", {}).get("code") if done.status_code != 200 else None
         if done.status_code == 200 or code not in ("UPLOAD_NOT_FOUND", "STORAGE_UNAVAILABLE"):
             break
-        print(f"  /complete answered {code} (attempt {attempt}); retrying")
+        if not quiet:
+            print(f"  /complete answered {code} (attempt {attempt}); retrying")
         time.sleep(2)
     assert done.status_code == 200, done.text
-    print(f"job {job_id}  ({len(data):,} bytes)")
+    return str(job_id), done.json(), seconds
+
+
+def main(base_url: str, audio: Path, expect_error: str | None, timeout_minutes: float, client_id: str) -> int:
+    # Each browser has its own random client id; a job is only visible to the id that created it.
+    api = httpx.Client(base_url=base_url, timeout=60, headers={"X-Client-Id": client_id})
+    job_id, done, seconds = upload(api, audio, quiet=False)
+    print(f"job {job_id}  ({audio.stat().st_size:,} bytes, uploaded in {seconds:.0f}s)")
 
     started = time.monotonic()
     seen: list[tuple[str, str | None]] = []
-    job: dict[str, Any] = done.json()
+    job: dict[str, Any] = done
     while True:
         key = (job["status"], job["progress_message"] or job["error_code"])
         if not seen or key != seen[-1]:
@@ -57,8 +80,8 @@ def main(base_url: str, audio: Path, expect_error: str | None) -> int:
             )
         if job["status"] in SETTLED:
             break
-        if time.monotonic() - started > GIVE_UP_AFTER_SECONDS:
-            print(f"FAIL: still {job['status']} after {GIVE_UP_AFTER_SECONDS}s")
+        if time.monotonic() - started > timeout_minutes * 60:
+            print(f"FAIL: still {job['status']} after {timeout_minutes:g} minutes")
             return 1
         time.sleep(POLL_EVERY_SECONDS)
         job = api.get(f"/api/uploads/{job_id}").json()
@@ -90,10 +113,15 @@ def main(base_url: str, audio: Path, expect_error: str | None) -> int:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    expect = sys.argv[sys.argv.index("--expect-error") + 1] if "--expect-error" in sys.argv else None
-    if expect:
-        args.remove(expect)
-    if len(args) != 2:
-        sys.exit(__doc__)
-    sys.exit(main(args[0].rstrip("/"), Path(args[1]), expect))
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("base_url")
+    parser.add_argument("audio", type=Path)
+    parser.add_argument("--expect-error", metavar="CODE")
+    parser.add_argument("--timeout", type=float, default=5, metavar="MINUTES")
+    parser.add_argument("--client-id", default=None, metavar="UUID")
+    args = parser.parse_args()
+    sys.exit(
+        main(
+            args.base_url.rstrip("/"), args.audio, args.expect_error, args.timeout, args.client_id or str(uuid.uuid4())
+        )
+    )

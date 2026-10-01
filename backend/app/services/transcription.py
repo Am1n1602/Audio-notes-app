@@ -36,8 +36,9 @@ from app.providers.gnani import (
     GnaniProtocolError,
     GnaniTransientError,
 )
-from app.providers.storage import ObjectStorage
+from app.providers.storage import ObjectStorage, StorageError
 from app.services import jobs
+from app.services.upload_rules import MAX_AUDIO_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def process_job(
     if job.status is JobStatus.QUEUED:
         return _submit(db, gnani, storage, settings, job, sleep)
     if job.status is JobStatus.TRANSCRIBING:
-        return _poll(db, gnani, settings, job, sleep)
+        return _poll(db, gnani, storage, settings, job, sleep)
     return None  # UPLOADING, SUMMARIZING, COMPLETED, FAILED: not this step's business
 
 
@@ -128,7 +129,9 @@ def _attempts(call: Callable[[], T], sleep: Sleep, job: AudioJob, what: str) -> 
 # --- polling -------------------------------------------------------------------------------------------------
 
 
-def _poll(db: Session, gnani: GnaniApi, settings: Settings, job: AudioJob, sleep: Sleep) -> NextStep:
+def _poll(
+    db: Session, gnani: GnaniApi, storage: ObjectStorage, settings: Settings, job: AudioJob, sleep: Sleep
+) -> NextStep:
     if job.gnani_job_id is None:
         # Claimed, but no Gnani job id was ever saved: a crash or a lost reply, so we do not know whether Gnani made
         # a job. Creating again could duplicate it, so fail visibly and let the user decide to retry.
@@ -143,6 +146,9 @@ def _poll(db: Session, gnani: GnaniApi, settings: Settings, job: AudioJob, sleep
         return _fail(db, job, failure_from_error(exc), exc)
 
     jobs.record_provider_status(db, job.id, batch.status)
+    jobs.set_progress_message(
+        db, job.id, JobStatus.TRANSCRIBING, jobs.PROGRESS_MESSAGES[JobStatus.TRANSCRIBING]
+    )  # it answered
     if batch.status == "CREATED":
         # Never started: we crashed between Create and Start, or Start kept failing. Start is safe to repeat, but not
         # forever: the deadline applies here too, or a Start that always fails would poll for the rest of time.
@@ -159,7 +165,7 @@ def _poll(db: Session, gnani: GnaniApi, settings: Settings, job: AudioJob, sleep
         if expired:
             return _timeout(db, job)
         return settings.gnani_poll_seconds
-    return _finish(db, gnani, job, batch, expired)
+    return _finish(db, gnani, storage, job, batch, expired)
 
 
 def _timeout(db: Session, job: AudioJob) -> NextStep:
@@ -175,6 +181,8 @@ def _transient(db: Session, job: AudioJob, exc: GnaniTransientError, expired: bo
     log_event(logger, event, job_id=job.id, gnani_job_id=job.gnani_job_id, error=exc)
     if expired:
         return _fail(db, job, failures_unavailable(), exc)
+    if exc.status_code != 429:  # a 429 clears in seconds; anything else means Gnani is not answering: say so
+        jobs.set_progress_message(db, job.id, JobStatus.TRANSCRIBING, jobs.WAITING_FOR_GNANI_MESSAGE)
     return _retry_delay(exc)
 
 
@@ -191,7 +199,9 @@ def _elapsed_seconds(job: AudioJob) -> float:
 # --- finishing -----------------------------------------------------------------------------------------------
 
 
-def _finish(db: Session, gnani: GnaniApi, job: AudioJob, batch: BatchJob, expired: bool) -> NextStep:
+def _finish(
+    db: Session, gnani: GnaniApi, storage: ObjectStorage, job: AudioJob, batch: BatchJob, expired: bool
+) -> NextStep:
     assert job.gnani_job_id is not None
     ready: BatchFile | None = None
     try:
@@ -206,7 +216,7 @@ def _finish(db: Session, gnani: GnaniApi, job: AudioJob, batch: BatchJob, expire
         return _fail(db, job, failure_from_error(exc), exc)
 
     if ready is None or ready.transcript_url is None:
-        return _fail(db, job, failure_from_terminal(batch, files), None)
+        return _fail(db, job, _if_recording_is_gone(storage, job, failure_from_terminal(batch, files)), None)
 
     try:
         transcript = gnani.download_transcript(ready.transcript_url)
@@ -254,6 +264,25 @@ def _fail(db: Session, job: AudioJob, failure: Failure, cause: Exception | None)
             cause=type(cause).__name__ if cause else None,
         )
     return None
+
+
+def _if_recording_is_gone(storage: ObjectStorage, job: AudioJob, failure: Failure) -> Failure:
+    """Gnani could not download the recording. If that is because it is no longer in storage, trying again can never
+    work, so say so instead of offering a Retry that fails the same way. (If storage itself cannot answer, we cannot
+    tell, and the failure stays retryable.)"""
+    if failure.code != failures.SOURCE_UNREACHABLE:
+        return failure
+    try:
+        gone = storage.head(job.object_key) is None
+    except StorageError:
+        return failure
+    return missing_recording_failure() if gone else failure
+
+
+def missing_recording_failure() -> Failure:
+    return Failure(
+        failures.RECORDING_MISSING, "The uploaded recording is no longer in storage. Please upload it again."
+    )
 
 
 def failures_unavailable() -> Failure:
@@ -306,7 +335,14 @@ def failure_from_terminal(batch: BatchJob, files: list[BatchFile]) -> Failure:
         return Failure(
             failures.INVALID_AUDIO, "This file could not be read as audio. It may be corrupted or not an audio file."
         )
-    if "download" in reasons or "paths were invalid" in reasons:
+    if "above the" in reasons and "limit" in reasons:  # "audio is 14700.2s, above the 14400s limit" (seen live)
+        return Failure(
+            failures.RECORDING_TOO_LONG,
+            f"This recording is longer than the {MAX_AUDIO_SECONDS // 3600} hour limit. "
+            "Split it into shorter parts and upload them one at a time.",
+        )
+    # a recording deleted from storage: job START_FAILED "All provided paths were invalid", file "FILE_NOT_FOUND"
+    if "download" in reasons or "paths were invalid" in reasons or "file_not_found" in reasons:
         return Failure(
             failures.SOURCE_UNREACHABLE, "The transcription service could not download the recording. Please try again."
         )

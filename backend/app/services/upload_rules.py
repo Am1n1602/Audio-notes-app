@@ -37,6 +37,9 @@ LANGUAGE_NAMES: dict[str, str] = {
 SUPPORTED_LANGUAGES = frozenset(LANGUAGE_NAMES)
 DEFAULT_LANGUAGE = "en-IN"
 MAX_LANGUAGES = 3
+# Gnani Batch's limit per file. We cannot know a recording's length when it is uploaded (only its size), so Gnani is
+# what enforces it: it refuses the file within seconds ("audio is 14700.2s, above the 14400s limit", seen live).
+MAX_AUDIO_SECONDS = 4 * 3600
 MAX_FILENAME_LENGTH = 255
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")

@@ -15,7 +15,7 @@ from app.schemas.uploads import (
     UploadListItem,
     UploadTarget,
 )
-from app.services import jobs, uploads
+from app.services import jobs, recovery, uploads
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -74,14 +74,27 @@ def retry(
 
 @router.get("", response_model=list[UploadListItem])
 def list_uploads(
-    limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db), owner: str = Depends(current_owner)
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    owner: str = Depends(current_owner),
+    queue: JobQueue = Depends(get_queue),
+    settings: Settings = Depends(get_settings),
 ) -> list[UploadListItem]:
-    """This browser's uploads, newest first."""
-    return [UploadListItem.model_validate(job) for job in jobs.list_jobs(db, limit, owner)]
+    """This browser's uploads, newest first. Any that stopped moving are given a new step (recovery.revive_stalled)."""
+    listed = jobs.list_jobs(db, limit, owner)
+    recovery.revive_stalled(db, queue, settings, listed)
+    return [UploadListItem.model_validate(job) for job in listed]
 
 
 @router.get("/{job_id}", response_model=UploadDetail)
-def get_upload(job: AudioJob = Depends(owned_job)) -> UploadDetail:
+def get_upload(
+    job: AudioJob = Depends(owned_job),
+    db: Session = Depends(get_db),
+    queue: JobQueue = Depends(get_queue),
+    settings: Settings = Depends(get_settings),
+) -> UploadDetail:
+    if recovery.revive_stalled(db, queue, settings, [job]):
+        db.refresh(job)  # the claim changed the row behind the ORM's back
     return UploadDetail.model_validate(job)
 
 
