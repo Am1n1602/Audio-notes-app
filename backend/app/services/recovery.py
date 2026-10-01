@@ -1,9 +1,12 @@
-"""Restart recovery: after a worker (re)starts, re-enqueue every job that should have work in flight.
+"""Getting a job's step chain going again when it has stopped. Two cases, one idea: Postgres holds the truth, so a fresh
+step can always be scheduled, and steps are idempotent and guarded by the atomic claim, so a duplicate is harmless.
 
-Why this is needed: a job's next step is a Redis message with a countdown. While a worker holds it, the message is
-unacknowledged, and if that worker is killed Redis only hands it back after the visibility timeout. Postgres still
-holds the truth (the job is mid-transcription), so at startup we simply schedule a fresh step for every such job.
-Steps are idempotent and guarded by the atomic claim, so a duplicate step is harmless.
+requeue_unfinished_jobs (local Celery only): a job's next step is a Redis message with a countdown. While a worker
+holds it, the message is unacknowledged, and if that worker is killed Redis only hands it back after the visibility
+timeout, so at worker start we schedule a fresh step for every job that should have one in flight. Deployed, Cloud
+Tasks keeps tasks durably and there is no worker start to hook, so this is not used.
+
+revive_stalled (both): a job silent for too long is given a new step when its owner asks about it, whatever the queue.
 """
 
 import logging

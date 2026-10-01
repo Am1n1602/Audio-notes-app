@@ -9,7 +9,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/app/core/config.py ->
 
 
 class Settings(BaseSettings):
-    """One settings object for the API and the worker. Real environment variables win over the root .env."""
+    """One settings object for the API and the worker. Real environment variables win over the root .env.
+
+    "The worker" below means whatever runs a job's steps: the Celery worker in local development, the private `steps`
+    Cloud Run service when deployed (SERVICE_ROLE=steps). Only it needs the Gnani and Groq keys; the API never does."""
 
     model_config = SettingsConfigDict(env_file=REPO_ROOT / ".env", extra="ignore")
 

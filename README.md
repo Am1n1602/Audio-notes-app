@@ -14,7 +14,15 @@ Build a web platform where a user uploads an audio file and receives:
 
 The assignment explicitly requires Next.js, FastAPI, Postgres, storage, background jobs, deployment, visible failure handling, and progress reporting.
 
-## Recommended stack
+## Live demo
+
+- **App:** https://audio-notes-app-five.vercel.app. Open `/architecture` for the system explanation and the link back to this repository.
+- **API:** https://api-896077213415.asia-south1.run.app (`/api/health`; interactive docs at `/docs`).
+- A public demo with no sign-in has limits so one visitor cannot run it up: files up to 200 MB, five uploads per browser per
+  24 hours, and a recording is deleted from storage two hours after it is uploaded (the transcript and summary stay).
+  The first request after a quiet spell is slower, because the services and the free database start from zero.
+
+## Stack
 
 | Layer | Choice | Reason |
 |---|---|---|
@@ -28,9 +36,7 @@ The assignment explicitly requires Next.js, FastAPI, Postgres, storage, backgrou
 | Worker | Celery locally; the same step code behind a private HTTP endpoint when deployed | Clear background-job model and retry controls |
 | ASR | Gnani Prisma v2.5 Batch STT | Required provider and correct choice for long recordings |
 | Summary LLM | Groq (OpenAI-compatible API) behind a small adapter | Fast, has a free tier for a demo; the adapter keeps it replaceable |
-| Deployment | **Google Cloud Run** (API and step services) + Cloud Tasks + Neon; frontend on Vercel or Cloud Run | Scales to zero, so a demo can stay inside free allowances |
-
-Use one concrete provider combination and document it. Do not change providers mid-project unless a real deployment limitation forces it.
+| Deployment | **Google Cloud Run** (API and step services) + Cloud Tasks + Neon; frontend on **Vercel** | Scales to zero, so a demo can stay inside free allowances; Vercel is the framework's own host |
 
 ### Deployment
 
@@ -59,66 +65,42 @@ Official docs:
 ## High-level architecture
 
 ```text
-                         ┌─────────────────────────────┐
-                         │          Next.js UI         │
-                         │ upload / history / detail   │
-                         └─────────────┬───────────────┘
-                                       │
-                        create upload  │  status / results
-                                       ▼
-                         ┌─────────────────────────────┐
-                         │          FastAPI            │
-                         │ auth-free task API for demo │
-                         └───────┬─────────┬───────────┘
-                                 │         │
-                       presign   │         │ DB metadata
-                                 ▼         ▼
-                         ┌────────────┐  ┌─────────────┐
-                         │ Object     │  │ PostgreSQL  │
-                         │ Storage    │  │ files/jobs  │
-                         └──────┬─────┘  └──────┬──────┘
-                                │                │
-                        HTTPS signed URL         │
-                                │                │
-                                ▼                │
-                         ┌─────────────────────────────┐
-                         │        Redis Queue          │
-                         └────────────┬────────────────┘
-                                      ▼
-                         ┌─────────────────────────────┐
-                         │      Celery Worker          │
-                         │ validate → submit → poll →  │
-                         │ transcript → summarize      │
-                         └──────┬───────────────┬──────┘
-                                │               │
-                                ▼               ▼
-                         ┌─────────────┐  ┌──────────────┐
-                         │ Gnani Batch │  │ Summary LLM  │
-                         │    STT      │  │              │
-                         └─────────────┘  └──────────────┘
+ Browser (Next.js on Vercel)
+    │  1 initiate (metadata only)            4 poll status, read transcript and summary
+    ▼                                         ▲
+ FastAPI "api" ──────────────────────────────┤         X-Client-Id keeps each browser's history separate
+    │  2 signed upload URL                    │
+    │  3 verify object, enqueue first step    │
+    ▼                                         │
+ Queue ──► step runner ──► one short step ──► PostgreSQL (the source of truth: status, transcript, summary)
+ (Redis locally,   ▲  (Celery locally,    │
+  Cloud Tasks      │   private Cloud Run  ├──► Gnani Batch STT: fetches the audio from a signed S3 link, returns the transcript
+  deployed)        │   "steps" deployed)  └──► Groq: summary of the stored transcript
+                   └── each step schedules the next (due time recorded first)
+
+ Browser ══ PUT the file straight to ══► private S3 bucket   (the audio never passes through the API)
 ```
+
+The browser, the API and the step runner share only Postgres, the queue and the bucket. Nothing waits on a provider inside
+a web request: the API answers in milliseconds, and a recording is processed as a chain of short steps.
 
 ## Processing model
 
-The HTTP request should never wait for transcription or summarization.
+What runs inside the web request (fast, no provider calls):
+1. `/initiate` validates the metadata, checks this browser's daily allowance, schedules the recording's deletion, creates the
+   job row and signs an upload URL.
+2. The browser sends the file straight to the bucket (progress is the browser's own upload progress).
+3. `/complete` confirms the object really exists and has the declared size, then enqueues the first step.
 
-Synchronous:
-1. Validate request metadata.
-2. Create a DB record.
-3. Generate an object-storage upload URL.
-4. Return the upload instructions.
-5. Confirm upload completion.
+What runs in the background, one short step at a time (each re-reads the job from Postgres and schedules the next):
+1. Claim the job atomically, sign a time-limited download link, create the Gnani Batch job, save its id at once, start it.
+2. Poll Gnani every 10 seconds, with longer waits after transient failures, until it finishes or the deadline passes.
+3. Fetch Gnani's fresh transcript link (they expire after an hour), download the transcript, validate and save it.
+4. Summarise the stored transcript with Groq (a long one in parts, then merged), validate the structure, save it, and mark
+   the job completed.
 
-Background:
-1. Validate object exists and metadata is consistent.
-2. Generate a time-limited HTTPS URL for Gnani.
-3. Create Gnani Batch job.
-4. Start the job.
-5. Poll at least every 10 seconds; use exponential backoff for transient failures.
-6. Download the transcript result before the Gnani `transcript_url` expires.
-7. Persist the transcript and update status.
-8. Generate the summary.
-9. Persist the summary and mark the task complete.
+A step that crashes, runs twice or arrives late does no harm: state changes are guarded single updates, a Gnani job is
+created at most once per job, and a stalled job is given a new step when its owner next opens it.
 
 ## Repository layout
 
@@ -295,16 +277,18 @@ Interactive docs are at `/docs` on the running API. Errors always look like `{"e
 
 ## Definition of done
 
-The demo is done only when a fresh user can open the deployed URL and:
+The demo is done when a fresh user can open the deployed URL and do each of these. All ten were checked on the deployed
+system (see the evidence in the right-hand column).
 
-1. upload a normal 2+ minute audio file without the frontend waiting on a long HTTP request;
-2. see upload progress;
-3. see a processing state after upload;
-4. reopen the page and still see the job state;
-5. eventually read the transcript;
-6. see a summary generated from the stored transcript;
-7. refresh the page and retain the result;
-8. see a useful error if upload, ASR, storage, or LLM fails;
-9. open `/architecture` and understand the end-to-end flow;
-10. find the GitHub repository link from `/architecture`.
-
+| # | A fresh user can | Evidence |
+|---|---|---|
+| 1 | upload a normal 2+ minute audio file without the frontend waiting on a long HTTP request | The file goes browser to S3; the API answers `/initiate` and `/complete` in milliseconds; recordings of several minutes completed on the deployed site |
+| 2 | see upload progress | Byte progress from the browser's own upload; `scripts/pipeline_check.py` and the page both show it |
+| 3 | see a processing state after upload | "Uploaded", "Transcribing", "Generating summary" with a ruler, persisted in Postgres |
+| 4 | reopen the page and still see the job state | State is read from the API, not kept in the browser; the history list reopens any job |
+| 5 | eventually read the transcript | Gnani's transcript is stored and shown, with a copy button |
+| 6 | see a summary generated from the stored transcript | Groq summarises the saved text only; five fixed sections, validated before saving |
+| 7 | refresh the page and retain the result | Result lives in Postgres; the audio itself is deleted after two hours, the text stays |
+| 8 | see a useful error if upload, ASR, storage, or LLM fails | 23 injected failure scenarios plus real outages; each ends in a plain message and, where useful, a Retry |
+| 9 | open `/architecture` and understand the end-to-end flow | Written explanation of the flow, storage, long audio, sync versus background, and what to do differently |
+| 10 | find the GitHub repository link from `/architecture` | The page links to this repository |

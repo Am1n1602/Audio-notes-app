@@ -43,9 +43,10 @@ from app.services.summary_prompt import SummaryPrompts, get_prompts
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # LLM calls per unit of work, counting the first (the same policy as Gnani's Create/Start)
-# One step must finish well inside Redis' visibility timeout (300 s, providers/queue.py): a step that is still running
-# when that expires is delivered a second time and the paid calls run twice. The LLM client's timeouts are 5 s to
-# connect and 30 s to read, so no retry starts after this budget and the worst case is about 180 + 35 seconds.
+# One step must finish well inside the queue's redelivery time (300 s: Redis' visibility timeout locally, the Cloud
+# Tasks dispatch deadline when deployed): a step still running when that expires is delivered a second time and the
+# paid calls run twice. The LLM client's timeouts are 5 s to connect and 30 s to read, so no retry starts after this
+# budget and the worst case is about 180 + 35 seconds.
 STEP_BUDGET_SECONDS = 180
 BACKOFF_SECONDS = (2, 4, 8, 16)  # pauses between attempts when the LLM gave no retry-after
 MERGE_FAN_IN = 8  # part-summaries merged per call: 8 x ~500 tokens keeps a merge well inside a small per-minute cap

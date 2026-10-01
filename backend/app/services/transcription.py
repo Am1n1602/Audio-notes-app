@@ -1,8 +1,9 @@
 """Turns an uploaded job into a transcript, one bounded step at a time.
 
 process_job() does ONE step and returns how many seconds until the next step is due (or None when done). The caller
-(a Celery task) reschedules it. Every step re-reads the job from Postgres and acts on what it finds there, so a step
-can be repeated, crash halfway, or be delivered twice without harm. State lives in the database, never in worker memory.
+(the Celery task locally, the private Cloud Run step endpoint when deployed) reschedules it. Every step re-reads the
+job from Postgres and acts on what it finds there, so a step can be repeated, crash halfway, or be delivered twice
+without harm. State lives in the database, never in worker memory.
 
 What a step does, by the job's status:
   QUEUED        claim atomically -> Create -> save the Gnani job id at once -> Start
