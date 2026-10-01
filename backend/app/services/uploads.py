@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 def initiate_upload(
     db: Session,
     storage: ObjectStorage,
+    queue: JobQueue,
     settings: Settings,
     *,
     owner_id: str,
@@ -45,6 +46,14 @@ def initiate_upload(
     key = object_key(job_id, upload.extension)
     # Sign before inserting: signing is pure computation, so nothing external is touched if the insert then fails.
     url = storage.create_upload_url(key, upload.mime_type, upload.size_bytes, settings.upload_url_expires_seconds)
+    # Schedule the deletion BEFORE the person gets a way to upload, and refuse if it cannot be scheduled: a file with
+    # no deletion coming is what the retention limit forbids. (The task is harmless if the insert below fails: it
+    # finds no job and does nothing.)
+    try:
+        queue.enqueue_expire_recording(job_id, settings.audio_retention_seconds)
+    except QueueError as exc:
+        log_event(logger, "upload_refused", cause=type(exc).__name__)
+        raise AppError(503, failures.QUEUE_UNAVAILABLE, "We could not start your upload. Please try again.") from exc
     job = jobs.create_job(
         db,
         job_id=job_id,
@@ -69,6 +78,11 @@ def complete_upload(db: Session, storage: ObjectStorage, queue: JobQueue, job_id
     job = jobs.get_job(db, job_id)
     if job.status is not JobStatus.UPLOADING:
         return job, False  # duplicate or late call: report the current state, change nothing
+    if job.audio_deleted_at is not None:
+        # The retention period ended before the upload was confirmed. Accepting it now would keep a file past the limit.
+        raise AppError(
+            409, "RECORDING_EXPIRED", "This upload took too long and was cancelled. Please upload the file again."
+        )
 
     try:
         stored = storage.head(job.object_key)
@@ -128,6 +142,12 @@ def retry_upload(db: Session, queue: JobQueue, job_id: uuid.UUID) -> AudioJob:
     # one failed at or after the summary, whatever its error code says (a crash records INTERNAL_ERROR, a dead queue
     # overwrites the code with QUEUE_UNAVAILABLE). It resumes at the summary: nothing is transcribed twice.
     resume_summary = bool(job.transcript)
+    if job.status is JobStatus.FAILED and job.audio_deleted_at is not None and not resume_summary:
+        raise AppError(
+            409,
+            "NOT_RETRYABLE",
+            "The recording has been deleted, so it cannot be processed again. Please upload it again.",
+        )
     if job.status is JobStatus.FAILED and jobs.requeue_failed(db, job.id, resume_summary=resume_summary):
         log_event(
             logger, "job_retried", job_id=job.id, previous_error_code=job.error_code, resumes_at_summary=resume_summary
@@ -140,6 +160,13 @@ def retry_upload(db: Session, queue: JobQueue, job_id: uuid.UUID) -> AudioJob:
 def audio_url(storage: ObjectStorage, settings: Settings, job: AudioJob) -> str:
     """A signed link for playing the recording back. Only once the upload was verified: before that there may be no
     object, or (after a size mismatch) the wrong one."""
+    if job.audio_deleted_at is not None:
+        raise AppError(
+            410,
+            "RECORDING_EXPIRED",
+            f"The recording was deleted {_how_long(settings.audio_retention_seconds)} after it was uploaded. "
+            "Its transcript and summary are still here.",
+        )
     if job.status is JobStatus.UPLOADING or job.error_code == failures.UPLOAD_SIZE_MISMATCH:
         raise AppError(409, "AUDIO_NOT_AVAILABLE", "The recording has not finished uploading.")
     return storage.create_download_url(job.object_key, settings.audio_url_expires_seconds)
@@ -156,3 +183,12 @@ def _enqueue_or_fail(db: Session, queue: JobQueue, job_id: uuid.UUID) -> None:
         jobs.fail_job(db, job_id, failure)
         log_event(logger, "job_failed", job_id=job_id, error_code=failure.code, cause=type(exc).__name__)
         raise AppError(503, failure.code, failure.message) from exc
+
+
+def _how_long(seconds: int) -> str:
+    """7200 -> "2 hours", 3600 -> "1 hour", 120 -> "2 minutes": how a person would say the retention period."""
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} hour" + ("" if hours == 1 else "s")
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes} minute" + ("" if minutes == 1 else "s")

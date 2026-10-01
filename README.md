@@ -45,7 +45,7 @@ Neon Postgres, AWS S3 (uploads go browser -> S3 directly), Gnani, Groq
 
 Nothing runs when nobody uses the demo. Locally nothing changes: Docker Postgres and Redis, Celery, `uvicorn`. The step logic, the state machine and all tests are shared (`backend/app/services/steps.py` runs one step for both the Celery task and the endpoint); only the queue adapter (`QUEUE_BACKEND`) and one endpoint differ. How to deploy it is under "Deploy" below.
 
-Because the demo is public and has no sign-in, it limits each browser to `MAX_UPLOADS_PER_DAY` uploads per 24 hours (the deployment uses 5) and files to `MAX_UPLOAD_BYTES` (200 MB there), and caps Cloud Run instances.
+Because the demo is public and has no sign-in, it limits each browser to `MAX_UPLOADS_PER_DAY` uploads per 24 hours (the deployment uses 5) and files to `MAX_UPLOAD_BYTES` (200 MB there), and caps Cloud Run instances. Recordings are deleted from storage two hours after the upload begins (see "Data retention").
 
 ## Important Gnani API fact
 
@@ -236,6 +236,7 @@ deploy/gcp.sh build         # build the image with Cloud Build
 deploy/gcp.sh steps         # private service: only Cloud Tasks (as steps-sa) may call it
 deploy/gcp.sh migrate       # alembic upgrade head, as a Cloud Run job
 deploy/gcp.sh api           # public service; prints its URL
+deploy/gcp.sh schedule      # daily cleanup job (Cloud Scheduler, 03:00 India time), see "Data retention"
 ```
 
 Then the frontend: import the repository into Vercel with **Root Directory `frontend`** and one environment variable,
@@ -257,6 +258,24 @@ for Gnani's call limit; the queue runs at most two steps at once and retries a f
 120 seconds between tries; the API holds only the database and storage secrets, never the Gnani or Groq keys; Neon's
 database sleeps after 5 idle minutes, so the first request after a pause takes a few seconds longer.
 
+## Data retention
+
+An uploaded recording stays in storage for at most `AUDIO_RETENTION_SECONDS` (default 7200, two hours), counted from
+`/initiate`. Only the audio goes: the transcript and the summary are kept, and the page says when a recording is gone.
+
+- **The cap.** `/initiate` schedules one delayed deletion per upload (Cloud Tasks when deployed, a Celery countdown locally)
+  and refuses the upload if it cannot be scheduled, so no file is ever accepted without a deletion coming. S3's own
+  lifecycle rules count whole days, which is too coarse for hours.
+- **The safety net.** A daily Cloud Scheduler job (`deploy/gcp.sh schedule`, 03:00 India time) calls
+  `POST /internal/expire-overdue` on the private step service and deletes whatever is past its time: a deletion that was
+  lost or kept failing, and uploads made before the rule existed. One call handles up to 500 recordings. It wakes the database
+  once a day, not around the clock, so scale-to-zero holds.
+- **After deletion** the recording cannot be played (`GET /api/uploads/{id}/audio` answers `410 RECORDING_EXPIRED`) or
+  processed again: a failed job that needs the audio is no longer retryable, while a failed summary still is (it reads
+  the saved transcript). `/complete` refuses an upload that arrives after its deadline.
+- **Not covered:** this deletes only our copy. Gnani fetches the audio through a short-lived link and Groq receives the
+  transcript text; how long either keeps them is their own policy, which this project has not checked.
+
 ## API
 
 | Endpoint | Purpose |
@@ -265,10 +284,10 @@ database sleeps after 5 idle minutes, so the first request after a pause takes a
 | `POST /api/uploads/{id}/complete` | verify the upload landed in storage, then queue it for the worker (idempotent) |
 | `POST /api/uploads/{id}/retry` | start a new attempt for a failed job, when `can_retry` is true (idempotent) |
 | `GET /api/uploads`, `GET /api/uploads/{id}` | this browser's history and a job's detail (status, stage message, transcript, summary, error, `can_retry`) |
-| `GET /api/uploads/{id}/audio` | a short-lived signed link to play the stored recording (never cached) |
+| `GET /api/uploads/{id}/audio` | a short-lived signed link to play the stored recording (never cached); `410 RECORDING_EXPIRED` once it has been deleted |
 | `GET /api/config` | public and read-only: the file types, size limit and languages the backend accepts, so the page never copies them |
 | `GET /api/health` | Postgres status, and Redis when the queue is Redis |
-| `POST /internal/steps` | **private service only**: runs one step of a job; called by Cloud Tasks with a service-account token, not part of the public API |
+| `POST /internal/steps`, `/internal/expire`, `/internal/expire-overdue` | **private service only**: run one step of a job, delete one recording, and the daily sweep; called by Cloud Tasks and Cloud Scheduler with a service-account token, not part of the public API |
 
 **Per-browser history.** There are no accounts. The browser generates a random client id (a UUID v4), keeps it in `localStorage` and sends it in the `X-Client-Id` header on every `/api/uploads` call. Jobs are shown only to the browser that created them: another browser (or a caller who merely knows a job id) gets `404 JOB_NOT_FOUND`, identical to a job that does not exist, and a missing or malformed header gets `401 CLIENT_ID_REQUIRED` / `CLIENT_ID_INVALID`. This keeps visitors' uploads private from each other on a public demo; it is not authentication (clearing site data loses the history, another browser starts empty).
 

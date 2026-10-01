@@ -18,7 +18,7 @@ from app.providers.gnani import get_gnani
 from app.providers.llm import get_llm
 from app.providers.queue import JobQueue, QueueError
 from app.providers.storage import get_storage
-from app.services import jobs, pipeline
+from app.services import jobs, pipeline, retention
 from app.services.summary_prompt import get_prompts
 
 logger = logging.getLogger(__name__)
@@ -65,3 +65,16 @@ def run_step(job_id: uuid.UUID, queue: JobQueue) -> None:
             except QueueError:
                 jobs.clear_next_step(db, job_id)  # nothing is scheduled, so the repeat of this step must run
                 raise
+
+
+def run_expiry(job_id: uuid.UUID) -> None:
+    """Delete one job's stored audio (the delayed task scheduled when the upload began). Raises OperationalError or
+    StorageError when the database or storage blinked: the caller delivers it again."""
+    with get_sessionmaker()() as db:
+        retention.expire_recording(db, get_storage(), job_id)
+
+
+def run_sweep() -> tuple[int, int]:
+    """The daily sweep over every overdue recording (services/retention.py). Returns (deleted, failed)."""
+    with get_sessionmaker()() as db:
+        return retention.expire_overdue(db, get_storage(), get_settings())

@@ -11,6 +11,7 @@ class AppConfig(BaseModel):
 
     max_upload_bytes: int
     upload_url_expires_seconds: int
+    audio_retention_seconds: int  # a recording is deleted this long after the upload began
     audio_extensions: list[str]
     languages: list[Language]
     max_languages: int

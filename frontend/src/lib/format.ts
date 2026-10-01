@@ -18,6 +18,16 @@ export function formatDuration(totalSeconds: number): string {
   return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
 }
 
+/** A span in the words a sentence needs: "2 hours", "1 hour", "90 minutes". (formatDuration is the compact form.) */
+export function formatSpan(totalSeconds: number): string {
+  const minutes = Math.max(1, Math.round(totalSeconds / 60));
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+}
+
 /** How long ago, coarsely. `now` is a parameter so the result can be tested and re-computed on a timer. */
 export function formatAgo(iso: string, now: number): string {
   const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));

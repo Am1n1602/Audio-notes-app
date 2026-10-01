@@ -13,8 +13,15 @@ from app.core import failures
 from app.core.config import get_settings
 from app.core.failures import Failure
 from app.db.models import JobStatus
-from app.providers.queue import PROCESS_JOB_TASK, CeleryJobQueue, QueueError, make_celery_app
-from app.services import jobs, pipeline
+from app.providers.queue import (
+    EXPIRE_RECORDING_TASK,
+    PROCESS_JOB_TASK,
+    CeleryJobQueue,
+    QueueError,
+    make_celery_app,
+)
+from app.providers.storage import StorageError
+from app.services import jobs, pipeline, steps
 from worker import tasks
 
 
@@ -213,3 +220,32 @@ def test_a_database_blip_is_retried_by_celery_not_recorded_as_a_job_failure(
 def test_infrastructure_retries_are_bounded() -> None:
     assert tasks.process_job.autoretry_for == (OperationalError, QueueError)
     assert tasks.process_job.max_retries == 10 and tasks.process_job.retry_backoff_max == 120
+
+
+# --- the deletion task -------------------------------------------------------------------------------------------
+
+
+def test_the_expiry_task_has_the_name_the_api_sends() -> None:
+    assert tasks.expire_recording.name == EXPIRE_RECORDING_TASK == "worker.expire_recording"
+
+
+def test_the_expiry_task_deletes_through_the_shared_runner(
+    monkeypatch: pytest.MonkeyPatch, db: Session, storage: FakeStorage
+) -> None:
+    monkeypatch.setattr(steps, "get_storage", lambda: storage)
+    job_id = job_in_status(db, JobStatus.QUEUED)
+    key = jobs.get_job(db, job_id).object_key
+    storage.put(key, 100)
+    assert tasks.expire_recording.apply(args=[str(job_id)]).successful()
+    assert storage.deleted == [key]
+
+
+def test_a_storage_outage_is_retried_by_celery_with_the_same_bounds_as_a_step() -> None:
+    assert tasks.expire_recording.autoretry_for == (OperationalError, StorageError)
+    assert tasks.expire_recording.max_retries == 10 and tasks.expire_recording.retry_backoff_max == 120
+
+
+def test_an_unreachable_broker_fails_the_deletion_enqueue_fast_with_our_error_type() -> None:
+    dead = get_settings().model_copy(update={"redis_url": "redis://127.0.0.1:1/0"})
+    with pytest.raises(QueueError):
+        CeleryJobQueue(make_celery_app(dead)).enqueue_expire_recording(uuid.uuid4(), 7200)

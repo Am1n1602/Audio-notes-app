@@ -3,12 +3,12 @@
 import json
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 import requests
-from fakes import FakeQueue
+from fakes import FakeQueue, FakeStorage
 from fastapi.testclient import TestClient
 from google.api_core.exceptions import DeadlineExceeded, ServiceUnavailable
 from google.auth.exceptions import DefaultCredentialsError
@@ -24,7 +24,7 @@ from app.db.models import AudioJob, JobStatus
 from app.main import create_app
 from app.providers.cloud_tasks import CloudTasksJobQueue
 from app.providers.queue import QueueError, get_queue
-from app.services import jobs, pipeline
+from app.services import jobs, pipeline, steps
 
 QUEUE = "projects/demo/locations/asia-south1/queues/job-steps"
 STEPS = "https://steps-123.asia-south1.run.app"
@@ -237,6 +237,80 @@ def test_a_bug_is_recorded_on_the_job_and_acknowledged(
 def test_a_malformed_request_is_refused(steps_client: TestClient) -> None:
     assert steps_client.post("/internal/steps", json={"job_id": "not-a-uuid"}).status_code == 422
     assert steps_client.post("/internal/steps", json={}).status_code == 422
+
+
+# --- the recording-deletion endpoints -----------------------------------------------------------------------------
+
+
+def test_a_deletion_task_goes_to_the_expire_endpoint_at_the_scheduled_time() -> None:
+    client = FakeTasksClient()
+    CloudTasksJobQueue(cloud_settings(), client).enqueue_expire_recording(uuid.uuid4(), countdown=7200)
+    (request,) = client.requests
+    assert request.task.http_request.url == f"{STEPS}/internal/expire"
+    assert request.task.http_request.oidc_token.audience == STEPS  # the same private service and token as a step
+    assert 7190 <= request.task.schedule_time.timestamp() - datetime.now(UTC).timestamp() <= 7210
+
+
+def test_the_expire_endpoint_deletes_the_recording(
+    steps_client: TestClient, db: Session, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steps, "get_storage", lambda: storage)
+    job_id = job_in_status(db, JobStatus.QUEUED)
+    key = jobs.get_job(db, job_id).object_key
+    storage.put(key, 100)
+    res = steps_client.post("/internal/expire", json={"job_id": str(job_id)})
+    assert (res.status_code, res.json()) == (200, {"status": "done"})
+    assert storage.deleted == [key]
+    db.expire_all()
+    assert jobs.get_job(db, job_id).audio_deleted_at is not None
+
+
+def test_the_expire_endpoint_acknowledges_a_job_that_no_longer_exists(
+    steps_client: TestClient, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steps, "get_storage", lambda: storage)
+    res = steps_client.post("/internal/expire", json={"job_id": str(uuid.uuid4())})
+    assert (res.status_code, storage.deleted) == (200, [])  # 2xx, or Cloud Tasks redelivers it for ever
+
+
+def test_a_storage_outage_asks_cloud_tasks_to_deliver_the_deletion_again(
+    steps_client: TestClient, db: Session, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steps, "get_storage", lambda: storage)
+    job_id = job_in_status(db, JobStatus.QUEUED)
+    storage.outage = True
+    res = steps_client.post("/internal/expire", json={"job_id": str(job_id)})
+    assert (res.status_code, res.json()["error"]["code"]) == (503, "STEP_RETRY")
+    db.expire_all()
+    assert jobs.get_job(db, job_id).audio_deleted_at is None  # still to do
+
+
+def test_the_daily_sweep_endpoint_reports_what_it_deleted(
+    steps_client: TestClient, db: Session, storage: FakeStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(steps, "get_storage", lambda: storage)
+    old, fresh = job_in_status(db, JobStatus.QUEUED), job_in_status(db, JobStatus.QUEUED)
+    db.execute(update(AudioJob).where(AudioJob.id == old).values(created_at=datetime.now(UTC) - timedelta(days=1)))
+    db.commit()
+    res = steps_client.post("/internal/expire-overdue")
+    assert (res.status_code, res.json()) == (200, {"deleted": 1, "failed": 0})
+    db.expire_all()
+    assert jobs.get_job(db, old).audio_deleted_at is not None and jobs.get_job(db, fresh).audio_deleted_at is None
+
+
+def test_the_daily_sweep_asks_to_be_run_again_when_the_database_is_down(
+    steps_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down() -> tuple[int, int]:
+        raise OperationalError("SELECT 1", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(steps, "run_sweep", down)
+    assert steps_client.post("/internal/expire-overdue").status_code == 503
+
+
+def test_the_public_service_has_no_deletion_routes(api: TestClient) -> None:
+    assert api.post("/internal/expire", json={"job_id": str(uuid.uuid4())}).status_code == 404
+    assert api.post("/internal/expire-overdue").status_code == 404
 
 
 # --- the health check without Redis -------------------------------------------------------------------------------

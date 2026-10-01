@@ -31,10 +31,16 @@ class CloudTasksJobQueue:
         self._deadline = timedelta(seconds=settings.steps_dispatch_deadline_seconds)
 
     def enqueue_process_job(self, job_id: uuid.UUID, countdown: int = 0) -> None:
+        self._enqueue("/internal/steps", job_id, countdown)
+
+    def enqueue_expire_recording(self, job_id: uuid.UUID, countdown: int) -> None:
+        self._enqueue("/internal/expire", job_id, countdown)
+
+    def _enqueue(self, path: str, job_id: uuid.UUID, countdown: int) -> None:
         task: dict[str, Any] = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
-                "url": f"{self._steps_url}/internal/steps",
+                "url": f"{self._steps_url}{path}",
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"job_id": str(job_id)}).encode(),
                 # Cloud Run accepts the token only if its audience is the service URL (no path).

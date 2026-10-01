@@ -13,6 +13,7 @@ def app_config(settings: Settings = Depends(get_settings)) -> AppConfig:
     return AppConfig(
         max_upload_bytes=settings.max_upload_bytes,
         upload_url_expires_seconds=settings.upload_url_expires_seconds,
+        audio_retention_seconds=settings.audio_retention_seconds,
         audio_extensions=list(AUDIO_TYPES),
         languages=[Language(code=code, name=name) for code, name in LANGUAGE_NAMES.items()],
         max_languages=MAX_LANGUAGES,

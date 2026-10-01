@@ -34,6 +34,8 @@ export interface UploadListItem {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** When the stored recording was deleted, or null while it may still be there. The transcript and summary stay. */
+  audio_deleted_at: string | null;
   /** Whether the backend will accept a Retry for this job. */
   can_retry: boolean;
 }
@@ -72,6 +74,8 @@ export interface Language {
 export interface AppConfig {
   max_upload_bytes: number;
   upload_url_expires_seconds: number;
+  /** A recording is deleted this long after its upload began. */
+  audio_retention_seconds: number;
   audio_extensions: string[];
   languages: Language[];
   max_languages: number;

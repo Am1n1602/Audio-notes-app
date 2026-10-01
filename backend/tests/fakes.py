@@ -15,6 +15,7 @@ class FakeStorage:
         self.objects: dict[str, StoredObject] = {}
         self.issued_uploads: list[tuple[str, str, int, int]] = []  # (key, content_type, size, expires)
         self.head_calls = 0
+        self.deleted: list[str] = []
         self.outage = False
         # Race tests: make every caller wait here, so all of them have read the job (still UPLOADING) before any
         # of them changes it. Without this, threads finish one after another and the race never actually happens.
@@ -35,6 +36,12 @@ class FakeStorage:
             raise StorageError("simulated outage")
         return self.objects.get(key)
 
+    def delete(self, key: str) -> None:
+        if self.outage:
+            raise StorageError("simulated outage")
+        self.objects.pop(key, None)
+        self.deleted.append(key)
+
     def put(self, key: str, size_bytes: int, content_type: str | None = None) -> None:
         """What the browser's direct upload to S3 would have done."""
         self.objects[key] = StoredObject(size_bytes=size_bytes, content_type=content_type)
@@ -45,12 +52,18 @@ class FakeQueue:
 
     def __init__(self) -> None:
         self.enqueued: list[tuple[uuid.UUID, int]] = []
+        self.expirations: list[tuple[uuid.UUID, int]] = []  # (job, seconds from now) of every scheduled deletion
         self.outage = False
 
     def enqueue_process_job(self, job_id: uuid.UUID, countdown: int = 0) -> None:
         if self.outage:
             raise QueueError("simulated broker outage")
         self.enqueued.append((job_id, countdown))
+
+    def enqueue_expire_recording(self, job_id: uuid.UUID, countdown: int) -> None:
+        if self.outage:
+            raise QueueError("simulated broker outage")
+        self.expirations.append((job_id, countdown))
 
 
 class FakeLlm:

@@ -25,13 +25,16 @@ def initiate(
     body: InitiateRequest,
     db: Session = Depends(get_db),
     storage: ObjectStorage = Depends(get_storage),
+    queue: JobQueue = Depends(get_queue),
     settings: Settings = Depends(get_settings),
     owner: str = Depends(current_owner),
 ) -> InitiateResponse:
-    """Validate, create the job, and return a signed URL. The browser then uploads straight to storage."""
+    """Validate, schedule the recording's deletion, create the job, and return a signed URL. The browser then uploads
+    straight to storage."""
     job, url, content_type = uploads.initiate_upload(
         db,
         storage,
+        queue,
         settings,
         owner_id=owner,
         filename=body.filename,

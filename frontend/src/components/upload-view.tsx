@@ -103,7 +103,7 @@ export function UploadView({ id }: { id: string }) {
       {isWorking(job.status) && <StatusPanel job={job} />}
       {job.status === "FAILED" && <FailurePanel job={job} onRetried={refresh} />}
 
-      {job.status !== "UPLOADING" && <AudioPlayer id={job.id} />}
+      {job.status !== "UPLOADING" && <AudioPlayer id={job.id} removed={job.audio_deleted_at !== null} />}
       {job.summary && <SummaryView summary={job.summary} />}
       {hasTranscript && <TranscriptView text={job.transcript ?? ""} languageCode={job.language_code} />}
     </article>

@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
-from app.core.failures import RETRYABLE_CODES
+from app.core.failures import RETRYABLE_CODES, RETRYABLE_WITHOUT_AUDIO
 from app.db.models import JobStatus
 from app.schemas.summary import Summary
 from app.services.upload_rules import DEFAULT_LANGUAGE
@@ -48,12 +48,15 @@ class UploadListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+    audio_deleted_at: datetime | None  # set once the recording itself is gone; the transcript and summary stay
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def can_retry(self) -> bool:
-        """Whether the UI should offer a Retry button: only for failures where trying again can plausibly help."""
-        return self.status is JobStatus.FAILED and self.error_code in RETRYABLE_CODES
+        """Whether the UI should offer a Retry button: only for failures where trying again can plausibly help, and
+        not when it would need a recording that has been deleted (a summary retry only needs the saved transcript)."""
+        codes = RETRYABLE_CODES if self.audio_deleted_at is None else RETRYABLE_WITHOUT_AUDIO
+        return self.status is JobStatus.FAILED and self.error_code in codes
 
 
 class UploadDetail(UploadListItem):

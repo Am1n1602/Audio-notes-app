@@ -5,6 +5,7 @@
 #   steps    deploy the PRIVATE step service Cloud Tasks calls
 #   migrate  run `alembic upgrade head` against the database as a Cloud Run job
 #   api      deploy the PUBLIC API
+#   schedule the daily cleanup: Cloud Scheduler calls the step service at 03:00 India time to delete overdue recordings
 # usage: deploy/gcp.sh <stage> [stage...]      (from the repository root; needs gcloud logged in)
 # The project and its billing account must exist already:
 #   gcloud projects create $PROJECT && gcloud billing projects link $PROJECT --billing-account=<id>
@@ -49,8 +50,8 @@ secret() {  # secret <secret-name> <ENV_VAR in .env> <service account that may r
 }
 
 setup() {
-  gcloud services enable run.googleapis.com cloudtasks.googleapis.com secretmanager.googleapis.com \
-    artifactregistry.googleapis.com cloudbuild.googleapis.com $G
+  gcloud services enable run.googleapis.com cloudtasks.googleapis.com cloudscheduler.googleapis.com \
+    secretmanager.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com $G
   gcloud iam service-accounts describe "$API_SA" $G >/dev/null 2>&1 || gcloud iam service-accounts create api-sa --display-name="Audio Notes API" $G
   gcloud iam service-accounts describe "$STEPS_SA" $G >/dev/null 2>&1 || gcloud iam service-accounts create steps-sa --display-name="Audio Notes step runner" $G
   gcloud artifacts repositories describe audio-notes --location="$REGION" $G >/dev/null 2>&1 \
@@ -106,5 +107,20 @@ api() {
     --set-secrets "$DB_SECRETS"
 }
 
-[ $# -gt 0 ] || { sed -n '2,10p' "$0"; exit 1; }
+schedule() {
+  # Each upload already has its own deletion queued for AUDIO_RETENTION_SECONDS after it began. This daily sweep is the
+  # safety net for one that was lost or kept failing, and for anything uploaded before the rule existed. It is signed as
+  # steps-sa, the only account allowed to call the private service.
+  local flags=(--location="$REGION" --schedule="0 3 * * *" --time-zone="Asia/Kolkata"
+    --uri="$(steps_url)/internal/expire-overdue" --http-method=POST
+    --oidc-service-account-email="$STEPS_SA" --oidc-token-audience="$(steps_url)"
+    --attempt-deadline=300s --max-retry-attempts=3 --min-backoff=60s $G)
+  if gcloud scheduler jobs describe expire-recordings --location="$REGION" $G >/dev/null 2>&1; then
+    gcloud scheduler jobs update http expire-recordings "${flags[@]}"
+  else
+    gcloud scheduler jobs create http expire-recordings "${flags[@]}"
+  fi
+}
+
+[ $# -gt 0 ] || { sed -n '2,11p' "$0"; exit 1; }
 for stage in "$@"; do "$stage"; done

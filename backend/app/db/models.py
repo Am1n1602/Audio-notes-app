@@ -79,6 +79,10 @@ class AudioJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
 
+    # When the stored audio was deleted (services/retention.py). Set once, never cleared: the transcript and summary
+    # stay, the recording does not. NULL means the file may still be in storage.
+    audio_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

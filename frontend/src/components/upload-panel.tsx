@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAppConfig } from "@/hooks/use-app-config";
 import { useUploadState } from "@/hooks/use-upload-state";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatSpan } from "@/lib/format";
 import { isBusy, uploadStore } from "@/lib/upload-store";
 import type { Language } from "@/lib/types";
 import { formatTypes, problemWith } from "@/lib/validate";
@@ -206,7 +206,8 @@ export function UploadPanel() {
           </p>
           {config && (
             <p className="mt-5 max-w-prose text-sm text-soft">
-              {formatTypes(config)}. Up to {formatBytes(config.max_upload_bytes)}.
+              {formatTypes(config)}. Up to {formatBytes(config.max_upload_bytes)}. The recording is deleted{" "}
+              {formatSpan(config.audio_retention_seconds)} after you upload it; the transcript and summary stay.
             </p>
           )}
           <input

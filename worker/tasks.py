@@ -6,7 +6,8 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.config import get_settings
 from app.db.session import get_sessionmaker
-from app.providers.queue import PROCESS_JOB_TASK, CeleryJobQueue, QueueError
+from app.providers.queue import EXPIRE_RECORDING_TASK, PROCESS_JOB_TASK, CeleryJobQueue, QueueError
+from app.providers.storage import StorageError
 from app.services import recovery, steps
 from worker.celery_app import celery_app
 
@@ -48,3 +49,16 @@ def ping() -> str:
 def process_job(job_id: str) -> None:
     """One bounded processing step for a job (services/steps.py). No task outlives Redis' visibility timeout."""
     steps.run_step(uuid.UUID(job_id), queue)
+
+
+@celery_app.task(
+    name=EXPIRE_RECORDING_TASK,
+    autoretry_for=(OperationalError, StorageError),  # the same bounds as a step
+    retry_backoff=5,
+    retry_backoff_max=120,
+    retry_jitter=True,
+    max_retries=10,
+)
+def expire_recording(job_id: str) -> None:
+    """Delete one job's stored audio, `AUDIO_RETENTION_SECONDS` after its upload began (services/retention.py)."""
+    steps.run_expiry(uuid.UUID(job_id))

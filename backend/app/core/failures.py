@@ -50,3 +50,7 @@ RETRYABLE_CODES = frozenset(
         INTERNAL_ERROR,
     }
 )
+
+# The retryable codes of the summary stage. Retry resumes at the summary, which reads the saved transcript and never the
+# audio, so these still work after the recording was deleted. The others start from the audio.
+RETRYABLE_WITHOUT_AUDIO = frozenset({SUMMARY_UNAVAILABLE, SUMMARY_RATE_LIMITED, SUMMARY_INVALID_RESPONSE})

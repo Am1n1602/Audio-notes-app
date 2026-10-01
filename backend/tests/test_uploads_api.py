@@ -168,7 +168,14 @@ def test_concurrent_completions_produce_exactly_one_transition(
     """Two browser tabs (or a retrying client) completing at once must trigger the follow-up work once."""
     with get_sessionmaker()() as session:
         job, _url, _type = uploads.initiate_upload(
-            session, storage, _settings(), owner_id=OWNER_A, filename="a.wav", size_bytes=10, language_code="en-IN"
+            session,
+            storage,
+            queue,
+            _settings(),
+            owner_id=OWNER_A,
+            filename="a.wav",
+            size_bytes=10,
+            language_code="en-IN",
         )
         job_id = job.id
     storage.put(f"uploads/{job_id}/audio.wav", 10)

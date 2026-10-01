@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 2 * 1024**3
     upload_url_expires_seconds: int = 900  # S3 checks expiry when the request starts, not when it ends
     audio_url_expires_seconds: int = 3600  # the signed link the player uses; the page asks for a new one when it lapses
+    # The most time an uploaded recording stays in storage, counted from /initiate. A delayed task per upload deletes it
+    # (services/retention.py); the transcript and summary stay. S3's own lifecycle rules count whole days: too coarse.
+    audio_retention_seconds: int = Field(default=2 * 3600, ge=60)
     # A job none of whose steps has run for this long is revived when its owner's page next asks (services/recovery.py).
     # Every step touches the job, and the longest honest silence is one summary step's retries (about 3.5 minutes).
     job_stalled_after_seconds: int = 600

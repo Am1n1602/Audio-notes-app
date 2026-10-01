@@ -94,9 +94,35 @@ def list_jobs(db: Session, limit: int, owner_id: str) -> list[AudioJob]:
 
 def count_started_since(db: Session, owner_id: str, within: timedelta) -> int:
     """How many uploads this browser has started in the last `within` (the database's clock, like every other time
-    comparison here). Counts every row, finished or not: an upload that never completes still left a file in storage."""
+    comparison here). Counts every row, finished or not: an upload that never completes can leave a file in storage."""
     statement = select(func.count()).where(AudioJob.owner_id == owner_id, AudioJob.created_at > func.now() - within)
     return db.scalar(statement) or 0
+
+
+def mark_audio_deleted(db: Session, job_id: uuid.UUID) -> bool:
+    """Record that this job's stored audio is gone. Guarded: set once, and True only for the call that set it."""
+    statement = (
+        update(AudioJob)
+        .where(AudioJob.id == job_id, AudioJob.audio_deleted_at.is_(None))
+        .values(audio_deleted_at=func.now())
+        .returning(AudioJob.id)
+        .execution_options(synchronize_session=False)
+    )
+    marked = db.execute(statement).first() is not None
+    db.commit()
+    return marked
+
+
+def overdue_audio_ids(db: Session, older_than: timedelta, limit: int) -> list[uuid.UUID]:
+    """Jobs whose audio may still be in storage although they were created more than `older_than` ago (database clock),
+    oldest first."""
+    statement = (
+        select(AudioJob.id)
+        .where(AudioJob.audio_deleted_at.is_(None), AudioJob.created_at < func.now() - older_than)
+        .order_by(AudioJob.created_at)
+        .limit(limit)
+    )
+    return list(db.scalars(statement))
 
 
 def transition(db: Session, job_id: uuid.UUID, from_status: JobStatus, to_status: JobStatus, **fields: Any) -> bool:

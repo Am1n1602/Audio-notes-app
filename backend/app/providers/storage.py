@@ -32,6 +32,10 @@ class ObjectStorage(Protocol):
         """Metadata of the stored object, or None if it does not exist. Raises StorageError on any other failure."""
         ...
 
+    def delete(self, key: str) -> None:
+        """Remove the object. Deleting one that is already gone is not an error. Raises StorageError otherwise."""
+        ...
+
 
 class S3Storage:
     def __init__(self, client: Any, bucket: str) -> None:  # boto3 ships no type stubs, so the client is Any
@@ -103,6 +107,14 @@ class S3Storage:
         except BotoCoreError as exc:  # timeouts, connection errors
             raise StorageError(f"head_object failed: {type(exc).__name__}") from exc
         return StoredObject(size_bytes=int(response["ContentLength"]), content_type=response.get("ContentType"))
+
+    def delete(self, key: str) -> None:
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=key)  # S3 answers 204 for a key that does not exist
+        except ClientError as exc:
+            raise StorageError(f"delete_object failed: {exc.response.get('Error', {}).get('Code')}") from exc
+        except BotoCoreError as exc:
+            raise StorageError(f"delete_object failed: {type(exc).__name__}") from exc
 
 
 @lru_cache

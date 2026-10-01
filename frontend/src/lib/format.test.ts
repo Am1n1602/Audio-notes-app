@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAgo, formatBytes, formatDuration, languageLabel, languageTag, wordCount } from "./format";
+import { formatAgo, formatBytes, formatDuration, formatSpan, languageLabel, languageTag, wordCount } from "./format";
 
 describe("formatBytes", () => {
   it.each([
@@ -9,6 +9,17 @@ describe("formatBytes", () => {
     [5_226_310, "5.0\u00a0MB"],
     [2 * 1024 ** 3, "2.0\u00a0GB"],
   ])("%d bytes is %s", (bytes, text) => expect(formatBytes(bytes)).toBe(text)); // a non-breaking space keeps number and unit together
+});
+
+describe("formatSpan", () => {
+  it.each([
+    [7200, "2 hours"],
+    [3600, "1 hour"],
+    [5400, "90 minutes"],
+    [120, "2 minutes"],
+    [60, "1 minute"],
+    [10, "1 minute"], // never "0 minutes"
+  ])("%d seconds is %s", (seconds, text) => expect(formatSpan(seconds)).toBe(text));
 });
 
 describe("formatDuration", () => {

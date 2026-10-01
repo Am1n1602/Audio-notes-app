@@ -5,6 +5,7 @@ import { formatTypes, problemWith } from "./validate";
 const config: AppConfig = {
   max_upload_bytes: 2 * 1024 ** 3,
   upload_url_expires_seconds: 900,
+  audio_retention_seconds: 7200,
   audio_extensions: [".wav", ".mp3", ".amr"],
   languages: [],
   max_languages: 3,

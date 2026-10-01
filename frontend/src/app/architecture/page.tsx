@@ -142,7 +142,8 @@ export default function ArchitecturePage() {
         <p>
           Postgres holds one row per recording: the file name, size, type and language, the job&apos;s status, the
           transcription job&apos;s id and status, the transcript, the summary, any error, and timestamps. The audio
-          itself stays in storage and is never copied into the database.
+          itself stays in storage, never in the database, and is deleted automatically two hours after the upload begins: a timer is
+          set for each upload, and a cleanup that runs once a day removes any that were missed. The transcript and summary are kept.
         </p>
         <p>
           There are no accounts. Your browser makes up a random id and keeps it; the server stores only a hash of it and
@@ -167,6 +168,10 @@ export default function ArchitecturePage() {
             is due and tries again if a step does not answer, so there is no always-on worker: nothing runs, or costs
             anything, while nobody is using it.
           </li>
+          <li>
+            A Google Cloud Scheduler job calls <code>steps</code> once a day, at 03:00 India time, to delete any recording that
+            is past its time. It is a safety net: each upload also has its own deletion scheduled in the queue.
+          </li>
           <li>The database is Neon Postgres in Singapore, the closest region it offers to Mumbai.</li>
           <li>Recordings are in a private AWS S3 bucket in Mumbai. Your browser uploads to it directly.</li>
         </ul>
@@ -189,7 +194,10 @@ export default function ArchitecturePage() {
           </li>
           <li>Transcripts are automatic, so names, numbers and heavily accented speech can be misheard.</li>
           <li>An upload stops if you close the tab, and cannot be resumed. Start it again.</li>
-          <li>Recordings cannot be deleted or renamed yet.</li>
+          <li>
+            The recording itself is gone after two hours, so it cannot be played or processed again after that. Transcripts and
+            summaries cannot be deleted or renamed yet.
+          </li>
           <li>The speech service allows about one call a second, so many recordings at once wait their turn.</li>
         </ul>
       </Section>

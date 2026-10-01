@@ -10,6 +10,7 @@ from kombu.exceptions import KombuError
 from app.core.config import Settings, get_settings
 
 PROCESS_JOB_TASK = "worker.process_job"
+EXPIRE_RECORDING_TASK = "worker.expire_recording"
 
 
 class QueueError(Exception):
@@ -19,6 +20,10 @@ class QueueError(Exception):
 class JobQueue(Protocol):
     def enqueue_process_job(self, job_id: uuid.UUID, countdown: int = 0) -> None:
         """Ask the worker to run one processing step for this job, `countdown` seconds from now."""
+        ...
+
+    def enqueue_expire_recording(self, job_id: uuid.UUID, countdown: int) -> None:
+        """Ask for this job's stored audio to be deleted, `countdown` seconds from now."""
         ...
 
 
@@ -46,8 +51,16 @@ class CeleryJobQueue:
         self._app = app
 
     def enqueue_process_job(self, job_id: uuid.UUID, countdown: int = 0) -> None:
+        self._send(PROCESS_JOB_TASK, job_id, countdown)
+
+    def enqueue_expire_recording(self, job_id: uuid.UUID, countdown: int) -> None:
+        # ponytail: Redis re-delivers a message held longer than the 300 s visibility timeout, and a 2 h countdown is
+        # held that long, so locally the delete may run several times. It is idempotent, so that is only noise.
+        self._send(EXPIRE_RECORDING_TASK, job_id, countdown)
+
+    def _send(self, task: str, job_id: uuid.UUID, countdown: int) -> None:
         try:
-            self._app.send_task(PROCESS_JOB_TASK, args=[str(job_id)], countdown=countdown)
+            self._app.send_task(task, args=[str(job_id)], countdown=countdown)
         except KombuError as exc:  # kombu's OperationalError when the broker cannot be reached
             raise QueueError(f"could not enqueue: {type(exc).__name__}") from exc
 
