@@ -113,6 +113,9 @@ def main(base_url: str, audio: Path, expect_error: str | None, timeout_minutes: 
 
 
 if __name__ == "__main__":
+    # Summaries come back in the person's language (Hindi, a rupee sign ...). A Windows console, or output sent to a pipe
+    # or file, defaults to a legacy code page that cannot print them and would crash AFTER a long run had finished.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("base_url")
     parser.add_argument("audio", type=Path)
